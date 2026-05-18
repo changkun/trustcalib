@@ -1,0 +1,189 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\definecolor{teal}{HTML}{0D9488}
+
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\title{\textbf{Progressive Autonomy as Preference Learning}\\[4pt]
+\large A Formalization of Trust Calibration for Agentic Tool Use}
+\author{Changkun Ou}
+\date{March 4, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We formalize trust calibration for agentic tool use (deciding when an
+automated agent's proposed action may execute autonomously versus require
+human approval) as a preference-learning problem. A policy gateway maintains
+a Gaussian-process posterior over a latent human risk-tolerance function,
+observed through a probit likelihood on binary approve/deny feedback, and
+escalates to the human exactly where the approval outcome is most uncertain.
+We show this is structurally an instance of Preferential Bayesian
+Optimization, inheriting its inference machinery (approximate Gaussian-process
+classification) and its sample-efficiency argument (uncertainty-targeted
+querying), while differing in objective: classifying an action space into
+allow/block/ask regions rather than optimizing a design.
+\end{abstract}
+
+\section{Background and Related Work}
+
+Deciding how much autonomy to delegate to an automated system is a classical
+human-in-the-loop control problem; the technical core here, recovering a
+human's latent acceptability function from sparse binary feedback, is
+\emph{preference learning}. \citet{chu2005preference} introduced
+Gaussian-process preference learning, placing a Gaussian-process (GP) prior
+over a latent utility and linking observed human choices to it through a
+probit likelihood. We adopt exactly this construction, specialized to unary
+approve/deny feedback. The same latent-utility-with-probit model underlies
+preference-driven sequential decision making: \citet{gonzalez2017preferential}
+formalized \emph{Preferential Bayesian Optimization} (PBO), embedding GP
+preference learning in the query loop of Bayesian optimization
+\citep{brochu2010tutorial,shahriari2016bayesopt}. Our policy gateway is
+structurally an instance of this framework, differing only in objective
+(classifying an action space rather than optimizing a design), as
+Table~\ref{tab:mapping} makes precise.
+
+The inferential machinery is classical GP classification: a GP prior, a
+non-Gaussian probit likelihood, and an analytically intractable posterior
+approximated by the Laplace method or Expectation Propagation
+\citep{minka2001ep}, developed comprehensively by
+\citet{rasmussen2006gaussian}. Treating the human query budget as a scarce
+resource makes the \textsc{ask} region an \emph{acquisition} rule in the sense
+of active learning \citep{settles2009active} and Bayesian optimization
+\citep{shahriari2016bayesopt}: interruptions are spent where the expected
+information about the allow/block boundary is greatest. Finally, drifting risk
+tolerance is a non-stationarity problem; we model it with a time-decaying
+kernel component in the spirit of non-stationary covariance functions
+\citep{paciorek2003nonstationary} and, for abrupt shifts, Bayesian online
+changepoint detection \citep{adams2007bocd}.
+
+\section{Setup}
+
+At each decision point $t = 1, 2, \ldots$, the policy gateway observes a proposed agent action $a_t \in \mathcal{A}$ and an execution context $c_t \in \mathcal{C}$, where:
+%
+\begin{align}
+    a_t &= (\texttt{tool\_name},\; \texttt{args},\; \texttt{target\_resource}), \\
+    c_t &= (\texttt{repo\_state},\; \texttt{task\_desc},\; \texttt{session\_history}).
+\end{align}
+%
+A human supervisor provides binary feedback $y_t \in \{0, 1\}$ (deny/approve). We write $x_t \coloneqq (a_t, c_t) \in \mathcal{X} = \mathcal{A} \times \mathcal{C}$ for the joint input.
+
+\section{Latent Risk Tolerance}
+
+\begin{definition}[Risk tolerance function]
+There exists a latent function $f\colon \mathcal{X} \to \mathbb{R}$ encoding the human's risk tolerance, such that approval probability follows a probit observation model:
+\begin{equation}
+    \Pr(y = 1 \mid x) = \Phi\!\bigl(f(x)\bigr),
+\end{equation}
+where $\Phi$ is the standard normal CDF.
+\end{definition}
+
+\begin{remark}
+This is structurally identical to the observation model in Preferential Bayesian Optimization \citep{gonzalez2017preferential} and, more fundamentally, in Gaussian-process preference learning \citep{chu2005preference}. In standard PBO, the human expresses a preference between two candidates $(x_i, x_j)$ via $\Pr(x_i \succ x_j) = \Phi\bigl(f(x_i) - f(x_j)\bigr)$. Here, the comparison is against an implicit internal threshold: the human approves when $f(x)$ exceeds their acceptable-risk boundary. The unary case is a degenerate pairwise comparison against a fixed reference point.
+\end{remark}
+
+\section{Gaussian Process Prior and Posterior}
+
+Place a GP prior over $f$ \citep{rasmussen2006gaussian}:
+\begin{equation}
+    f \sim \mathcal{GP}\!\bigl(\mu_0,\; k(x, x')\bigr).
+\end{equation}
+
+The kernel $k$ decomposes over the input structure. A natural choice is a product kernel:
+\begin{equation}
+    k(x, x') = k_{\text{tool}}(a, a') \cdot k_{\text{ctx}}(c, c') \cdot k_{\text{time}}(t, t'),
+\end{equation}
+where:
+\begin{itemize}[nosep]
+    \item $k_{\text{tool}}$ encodes similarity between actions (e.g., shared tool name, overlapping argument patterns, same reversibility class),
+    \item $k_{\text{ctx}}$ captures context similarity (same repository, file type, task category),
+    \item $k_{\text{time}}$ handles non-stationarity (see \S\ref{sec:nonstationary}).
+\end{itemize}
+
+After observing $\mathcal{D}_N = \{(x_t, y_t)\}_{t=1}^{N}$, the posterior is:
+\begin{equation}\label{eq:posterior}
+    p(f \mid \mathcal{D}_N) \;\propto\; \mathcal{GP}(\mu_0, k) \;\cdot \prod_{t=1}^{N} \Phi\!\bigl(f(x_t)\bigr)^{y_t} \bigl(1 - \Phi\!\bigl(f(x_t)\bigr)\bigr)^{1 - y_t}.
+\end{equation}
+
+This is analytically intractable due to the non-Gaussian likelihood. Approximate inference proceeds via the Laplace approximation \citep{rasmussen2006gaussian} or Expectation Propagation \citep{minka2001ep}, the same machinery used in PBO.
+
+\section{The Policy Gateway Decision Rule}
+
+Given the posterior predictive distribution at a new point $x_*$:
+\begin{equation}
+    \hat{p}(x_*) \coloneqq \mathbb{E}_{f \mid \mathcal{D}_N}\!\bigl[\Phi(f(x_*))\bigr],
+\end{equation}
+the gateway applies a three-tier decision:
+\begin{equation}\label{eq:decision}
+    \text{decision}(x_*) =
+    \begin{cases}
+        \textsc{allow}  & \text{if } \hat{p}(x_*) > \tau_{\text{high}}, \\[3pt]
+        \textsc{block}  & \text{if } \hat{p}(x_*) < \tau_{\text{low}}, \\[3pt]
+        \textsc{ask}    & \text{otherwise}.
+    \end{cases}
+\end{equation}
+
+The $\textsc{ask}$ region $[\tau_{\text{low}}, \tau_{\text{high}}]$ plays the role of an \emph{acquisition function} \citep{shahriari2016bayesopt,settles2009active}: the system queries the human precisely where the model is most uncertain about the approval outcome, maximizing the expected value of information per human interruption.
+
+\begin{remark}
+The target operating point (85--90\% auto-approve, 10--15\% human escalation) emerges naturally as the posterior concentrates. Early in a project, most actions fall in the $\textsc{ask}$ region. As the model learns, the $\textsc{ask}$ band narrows, and the auto-approve rate rises without any manual threshold tuning.
+\end{remark}
+
+\section{Non-Stationarity}\label{sec:nonstationary}
+
+Human risk tolerance drifts: early in a project the supervisor is cautious; as trust accumulates for familiar patterns, they become permissive. Model this via a time-decayed kernel component:
+\begin{equation}
+    k_{\text{time}}(t, t') = \exp\!\Bigl(-\frac{|t - t'|}{\lambda}\Bigr),
+\end{equation}
+where $\lambda > 0$ is a lengthscale controlling the forgetting rate. This gives recent approve/deny signals more weight, a principled analog of the intuition that ``agents earn trust over time.''
+
+For computational efficiency, an equivalent effect can be achieved through a sliding window of the most recent $W$ observations, or via online changepoint detection when the supervisor's behavior shifts abruptly (e.g., moving to a new codebase).
+
+\section{Correlated Generalization}
+
+A key advantage over a na\"ive contextual bandit (which treats each $(a, c)$ independently) is \emph{correlated generalization} through the kernel. Concretely:
+
+\begin{itemize}[nosep]
+    \item Approving \texttt{write\_file} to \texttt{/workspace/src/} transfers evidence to \texttt{write\_file} to \texttt{/workspace/test/}, since $k_{\text{tool}}$ and $k_{\text{ctx}}$ assign high similarity.
+    \item Denying \texttt{execute\_sql} with a \texttt{DROP} argument propagates caution to \texttt{execute\_sql} with \texttt{TRUNCATE}, without the human having to deny each variant individually.
+    \item A new tool with no interaction history inherits the prior $\mu_0$, which maps to $\textsc{ask}$, the fail-safe default.
+\end{itemize}
+
+\section{Connection to PBO}
+
+The mapping between the trust calibration problem and Preferential Bayesian Optimization \citep{gonzalez2017preferential} is summarized in Table~\ref{tab:mapping}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Component} & \textbf{PBO (Optimization)} & \textbf{Trust Calibration (Policy)} \\
+\midrule
+Input space $\mathcal{X}$ & Design parameters & (action, context) pairs \\
+Latent function $f$ & Objective to maximize & Risk tolerance to learn \\
+Human feedback & Pairwise preference $x_i \succ x_j$ & Unary approve/deny \\
+Observation model & $\Phi(f(x_i) - f(x_j))$ & $\Phi(f(x))$ \\
+Acquisition & Next query to evaluate & Next action to escalate \\
+Goal & Find $x^* = \arg\max f$ & Learn the $\textsc{allow}$/$\textsc{block}$ boundary \\
+\bottomrule
+\end{tabular}
+\caption{Structural correspondence between PBO and trust calibration.}
+\label{tab:mapping}
+\end{table}
+
+The ``preferential'' aspect is literal: the human is expressing preferences over what the agent should be allowed to do. The same mathematical machinery (GP priors, probit likelihoods, approximate posterior inference) transfers directly. The difference is the objective: PBO seeks to \emph{optimize}, while trust calibration seeks to \emph{classify} the action space into allow/block/ask regions with minimal human queries.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

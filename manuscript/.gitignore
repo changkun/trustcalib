@@ -1,0 +1,9 @@
+# LaTeX build artifacts (the compiled main.pdf is committed deliberately)
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.toc

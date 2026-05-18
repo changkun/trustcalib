@@ -66,3 +66,13 @@
 *.swp
 *~
 .DS_Store
+
+## Python / experiment
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# Downloaded AgentSec archive (not used by the experiment; see README).
+data/
+# Generated experiment artifacts are committed deliberately and stay tracked:
+#   experiment/figures/*.pdf and experiment/report.md

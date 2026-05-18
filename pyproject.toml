@@ -1,0 +1,21 @@
+[project]
+name = "trustcalib-experiment"
+version = "0.1.0"
+description = "Progressive Autonomy as Preference Learning: a GP-probit policy-gateway experiment on the AgentSec dataset"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "matplotlib>=3.8",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["experiment/tests"]
+
+[tool.uv]
+package = false

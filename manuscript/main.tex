@@ -202,6 +202,30 @@ Goal & Find $x^* = \arg\max f$ & Learn the $\textsc{allow}$/$\textsc{block}$ bou
 
 The ``preferential'' aspect is literal: the human is expressing preferences over what the agent should be allowed to do. The same mathematical machinery (GP priors, probit likelihoods, approximate posterior inference) transfers directly. The difference is the objective: PBO seeks to \emph{optimize}, while trust calibration seeks to \emph{classify} the action space into allow/block/ask regions with minimal human queries.
 
+\section{Datasets and Evaluation}
+
+Empirically grounding the gateway requires data pairing proposed agent
+actions with human approve/deny judgments. The closest public resource is
+R-Judge \citep{yuan-etal-2024-rjudge}, which supplies multi-turn agent
+interaction records annotated by humans with binary safe/unsafe labels across
+a range of risk scenarios; it is a natural source for a cold-start prior
+$\mu_0$ and for calibrating $k_{\text{tool}}$ and $k_{\text{ctx}}$. Broader
+agent-safety benchmarks such as Agent-SafetyBench
+\citep{zhang2024agentsafetybench} and ToolEmu \citep{ruan2024toolemu} widen
+the action and context coverage, but their risk labels are produced by
+automated judges rather than per-action human approval, so they are better
+suited to stress-testing the learned boundary than to fitting $f$ itself.
+
+A structural gap remains: no public dataset captures the \emph{longitudinal,
+per-supervisor} signal that the non-stationarity model
+(\S\ref{sec:nonstationary}) assumes. Existing corpora provide single-shot,
+aggregated annotations and do not track an individual supervisor's risk
+tolerance drifting over the course of a project. Validating the time-decaying
+kernel therefore requires either a controlled user study or a simulation with
+deliberately drifting synthetic annotators, with R-Judge serving as the
+static initializer. We treat this as an inherent limitation of currently
+available data rather than a deficiency of the model.
+
 \bibliographystyle{plainnat}
 \bibliography{references}
 

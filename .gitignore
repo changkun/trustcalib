@@ -1,0 +1,68 @@
+# LaTeX build artifacts
+# Based on the standard GitHub TeX.gitignore. The compiled
+# manuscript/main.pdf is committed deliberately and stays tracked.
+
+## Core latex/pdflatex auxiliary files
+*.aux
+*.lof
+*.log
+*.lot
+*.fls
+*.out
+*.toc
+*.fmt
+*.fot
+*.cb
+*.cb2
+.*.lb
+
+## Intermediate documents
+*.dvi
+*.xdv
+*-converted-to.*
+
+## Bibliography auxiliary files (bibtex/biblatex/biber)
+*.bbl
+*.bcf
+*.blg
+*-blx.aux
+*-blx.bib
+*.run.xml
+
+## Build tool auxiliary files
+*.fdb_latexmk
+*.synctex
+*.synctex(busy)
+*.synctex.gz
+*.synctex.gz(busy)
+*.pdfsync
+
+## Auxiliary and intermediate files from other packages
+# algorithms
+*.alg
+*.loa
+# hyperref
+*.brf
+# listings
+*.lol
+# makeidx
+*.idx
+*.ilg
+*.ind
+# glossaries
+*.acn
+*.acr
+*.glg
+*.glo
+*.gls
+*.glsdefs
+# todonotes
+*.tdo
+# xindy
+*.xdy
+
+## Editor / OS clutter
+*.bak
+*.swp
+*~
+.DS_Store

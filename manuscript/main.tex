@@ -107,7 +107,7 @@ There exists a latent function $f\colon \mathcal{X} \to \mathbb{R}$ encoding the
 where $\Phi$ is the standard normal CDF.
 \end{definition}
 
-\begin{remark}
+\begin{remark}\label{rem:unary}
 This is structurally identical to the observation model in Preferential Bayesian Optimization \citep{gonzalez2017preferential} and, more fundamentally, in Gaussian-process preference learning \citep{chu2005preference}. In standard PBO, the human expresses a preference between two candidates $(x_i, x_j)$ via $\Pr(x_i \succ x_j) = \Phi\bigl(f(x_i) - f(x_j)\bigr)$. Here, the comparison is against an implicit internal threshold: the human approves when $f(x)$ exceeds their acceptable-risk boundary. The unary case is a degenerate pairwise comparison against a fixed reference point.
 \end{remark}
 
@@ -135,6 +135,10 @@ After observing $\mathcal{D}_N = \{(x_t, y_t)\}_{t=1}^{N}$, the posterior is:
 \end{equation}
 
 This is analytically intractable due to the non-Gaussian likelihood. Approximate inference proceeds via the Laplace approximation \citep{rasmussen2006gaussian} or Expectation Propagation \citep{minka2001ep}, the same machinery used in PBO.
+
+\begin{remark}[Practical realization]
+For the unary model, the Laplace approximation of \citet{rasmussen2006gaussian} (Algorithm~3.1 there) reduces inference to a short Newton iteration to the posterior mode, after which the predictive approval probability admits the closed form $\mathbb{E}\bigl[\Phi(f(x_*))\bigr] \approx \Phi\!\bigl(\mu_* / \sqrt{1 + \sigma_*^2}\bigr)$, with $\mu_*$ and $\sigma_*^2$ the latent posterior mean and variance at $x_*$. At the scale of decision points in a single project ($N$ on the order of $10^2$ to $10^3$), this exact computation is inexpensive and needs no sparse approximation, which keeps the implementation a transparent instance of the cited machinery rather than a wrapper around a general optimization stack. A maintained off-the-shelf alternative is the \texttt{PairwiseGP} model of BoTorch \citep{balandat2020botorch}, a deployable PBO implementation; being pairwise, it recovers the unary setting only through the degenerate comparison against a fixed reference of Remark~\ref{rem:unary}, at the cost of a heavier dependency. This choice affects only the posterior: the gateway rule, the non-stationary drift component, and any baselines are unchanged.
+\end{remark}
 
 \section{The Policy Gateway Decision Rule}
 
@@ -225,6 +229,26 @@ kernel therefore requires either a controlled user study or a simulation with
 deliberately drifting synthetic annotators, with R-Judge serving as the
 static initializer. We treat this as an inherent limitation of currently
 available data rather than a deficiency of the model.
+
+We accordingly exercise the formulation in a controlled simulation with a
+known ground-truth oracle that instantiates Definition~1 and the drift of
+\S\ref{sec:nonstationary}, the standard evaluation protocol for Preferential
+Bayesian Optimization. Reproducible code, figures, and a generated report are
+provided under \texttt{experiment/}. Fitting the Laplace GP-probit gateway
+online and scoring it prequentially confirms the central behaviors: the
+\textsc{ask} band narrows as the posterior concentrates, the auto-approve rate
+rises toward the target operating point at a multiplicative reduction in human
+interruptions relative to always escalating, correlated generalization
+transfers evidence to unqueried action--context combinations, and the
+posterior tracks both gradual drift and an abrupt changepoint. The simulation
+also surfaces one honest caveat about \S5: the rule ``query inside the
+\textsc{ask} band,'' taken literally, is sample-efficient only while the target
+is stationary. Under an abrupt changepoint it has an exploration deficit, since
+regions the posterior has grown confident about leave the \textsc{ask} band and
+are never re-queried; the time-decayed kernel down-weights stale evidence but
+does not by itself generate new probes. A recency-aware or information-theoretic
+acquisition criterion (for example an expected-information or BALD rule with a
+forgetting term) is the natural remedy and is left to future work.
 
 \bibliographystyle{plainnat}
 \bibliography{references}

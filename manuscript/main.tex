@@ -5,8 +5,11 @@
 \usepackage{booktabs}
 \usepackage{enumitem}
 \usepackage[numbers,sort&compress]{natbib}
+\usepackage{graphicx}
 \usepackage{hyperref}
 \usepackage{xcolor}
+
+\graphicspath{{../experiment/figures/}}
 
 \definecolor{teal}{HTML}{0D9488}
 
@@ -230,25 +233,178 @@ deliberately drifting synthetic annotators, with R-Judge serving as the
 static initializer. We treat this as an inherent limitation of currently
 available data rather than a deficiency of the model.
 
-We accordingly exercise the formulation in a controlled simulation with a
-known ground-truth oracle that instantiates Definition~1 and the drift of
-\S\ref{sec:nonstationary}, the standard evaluation protocol for Preferential
-Bayesian Optimization. Reproducible code, figures, and a generated report are
-provided under \texttt{experiment/}. Fitting the Laplace GP-probit gateway
-online and scoring it prequentially confirms the central behaviors: the
-\textsc{ask} band narrows as the posterior concentrates, the auto-approve rate
-rises toward the target operating point at a multiplicative reduction in human
-interruptions relative to always escalating, correlated generalization
-transfers evidence to unqueried action--context combinations, and the
-posterior tracks both gradual drift and an abrupt changepoint. The simulation
-also surfaces one honest caveat about \S5: the rule ``query inside the
-\textsc{ask} band,'' taken literally, is sample-efficient only while the target
-is stationary. Under an abrupt changepoint it has an exploration deficit, since
-regions the posterior has grown confident about leave the \textsc{ask} band and
-are never re-queried; the time-decayed kernel down-weights stale evidence but
-does not by itself generate new probes. A recency-aware or information-theoretic
-acquisition criterion (for example an expected-information or BALD rule with a
-forgetting term) is the natural remedy and is left to future work.
+\section{Simulation Study}\label{sec:simulation}
+
+We accordingly exercise the formulation in a controlled simulation whose
+ground-truth oracle instantiates Definition~1 and the drift of
+\S\ref{sec:nonstationary}: the standard evaluation protocol for Preferential
+Bayesian Optimization, where the latent preference function is synthetic by
+construction so that recovery, calibration, and query efficiency can be
+measured against a known target. The action space is $18$ agent tools with
+interpretable decision-time risk attributes (reversibility, base sensitivity,
+blast radius, destructive-argument flag), $8$ target-resource sensitivity
+tiers, and $7$ task contexts. The oracle latent is a static action
+acceptability term plus a saturating accumulated-trust term
+(\S\ref{sec:nonstationary}) with an abrupt changepoint at $t = 750$, plus a
+three-way safety veto (irreversible \emph{and} sensitive \emph{and}
+low-trust); approvals are drawn as $y \sim \mathrm{Bernoulli}(\Phi(f^*))$. The
+gateway is the self-contained Laplace GP-probit of \citet{rasmussen2006gaussian}
+with the product kernel of \S4. The kernel observes the action and context
+risk attributes but never the time-varying veto or the drift, which it must
+recover from feedback through $k_{\text{time}}$. We process a stream of
+$N = 1500$ decision points over $6$ seeds, prequentially (every decision is
+scored before any label at that step exists), with phases learn $[0, 560)$,
+validation $[560, 1050)$ where $(\tau_{\text{low}}, \tau_{\text{high}})$ is
+tuned once under a tightened false-allow cap, and a frozen-policy test
+$[1050, 1500)$ in which the model keeps adapting online. Reproducible code,
+the full report, and all figures are provided under \texttt{experiment/}.
+
+\paragraph{Inference and correlated generalization hold.}
+Table~\ref{tab:results} reports the validation phase (a fair measurement of
+what was learned, with the changepoint inside it) and the post-changepoint
+test phase, against a no-correlation baseline that learns each tool
+independently. The GP gateway auto-decides $68\%$ of actions at $97.3\%$
+accuracy with a $2.4\%$ false-allow rate on validation, and $99.7\%$ accuracy
+post-changepoint; the independent baseline auto-decides almost everything but
+at $69$--$71\%$ accuracy, confirming that the kernel, not the three-tier rule,
+carries the quality. Correlated generalization is decisive: on a held-out
+\texttt{write\_file} to a test directory that was \emph{never} queried, the GP
+recovers the correct decision $98.7\% \pm 2.9$ of the time purely by kernel
+extrapolation from similar tools and targets, against $66.7\% \pm 47.1$ for
+the independent learner (chance $50\%$); Figure~\ref{fig:gateway} (right)
+visualizes the gap. The \textsc{ask} band narrows and the auto-approve rate
+rises as the posterior concentrates, then both react sharply at the
+changepoint and recover (Figure~\ref{fig:gateway}, left), and a fixed probe
+action's posterior tracks the drift and the abrupt reset
+(Figure~\ref{fig:drift}). Calibration is directionally correct but
+underconfident at the kernel-far tail (validation ECE $0.19$ against the true
+$\Phi(f^*)$), which we report rather than tune away.
+
+\begin{table}[tb]
+\centering
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{2}{c}{\textbf{Validation (headline)}}
+& \multicolumn{2}{c}{\textbf{Test (post-changepoint)}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+\textbf{Metric} & GP gateway & Independent & GP gateway & Independent \\
+\midrule
+Auto-decision accuracy      & {\boldmath$0.973 \pm .016$} & $0.688 \pm .164$ & {\boldmath$0.997 \pm .003$} & $0.705 \pm .248$ \\
+False-allow rate (safety)   & {\boldmath$0.024 \pm .018$} & $0.027 \pm .017$ & {\boldmath$0.003 \pm .003$} & $0.007 \pm .008$ \\
+Auto-decided fraction       & $0.684 \pm .020$ & $1.000 \pm .000$ & $0.644 \pm .094$ & $0.933 \pm .099$ \\
+\textsc{ask} / escalation   & $0.316 \pm .020$ & $0.000 \pm .000$ & $0.356 \pm .094$ & $0.067 \pm .099$ \\
+prob-RMSE vs $\Phi(f^*)$    & {\boldmath$0.263 \pm .004$} & $0.344 \pm .076$ & {\boldmath$0.236 \pm .025$} & $0.353 \pm .102$ \\
+ECE vs true prob            & {\boldmath$0.192 \pm .008$} & $0.273 \pm .078$ & {\boldmath$0.205 \pm .022$} & $0.316 \pm .104$ \\
+\bottomrule
+\end{tabular}
+\caption{Simulation results, mean $\pm$ std over $6$ seeds. \textbf{Bold}
+marks the decisive cells: the GP gateway is far more accurate, safer, and
+better calibrated than a no-correlation contextual baseline. The baseline's
+larger automated fraction is not a virtue (left unbolded): it automates more
+only by auto-deciding cases it gets wrong.}
+\label{tab:results}
+\end{table}
+
+\begin{figure}[tb]
+\centering
+\includegraphics[width=0.49\linewidth]{policy_evolution.pdf}\hfill
+\includegraphics[width=0.49\linewidth]{transfer.pdf}
+\caption{Left: the rolling policy mix. The \textsc{allow} share rises as the
+posterior concentrates (the \textsc{ask} band narrows), then collapses at the
+$t=750$ trust changepoint and recovers, exactly the Section~5 and Section~6
+dynamics. Right: correlated generalization (Section~7) to an action-context
+combination that was never queried.}
+\label{fig:gateway}
+\end{figure}
+
+\paragraph{Human-burden reduction.}
+Against the status quo of always escalating (one human query per action), the
+gateway spends $508 \pm 51$ queries over the scored phases versus $940$, a
+$\sim\!1.8\times$ reduction in interruptions, while auto-deciding most actions
+accurately and safely (Figure~\ref{fig:drift}, left; the full-stream
+cumulative trajectory shows a larger gap because the cold-start learn phase
+escalates heavily by design). This is the Section~1 promise, and it is the
+defensible headline rather than a comparison to random querying.
+
+\begin{figure}[tb]
+\centering
+\includegraphics[width=0.49\linewidth]{query_savings.pdf}\hfill
+\includegraphics[width=0.49\linewidth]{drift_tracking.pdf}
+\caption{Left: cumulative human queries, gateway versus always-escalate
+(Section~1). Right: a fixed probe action's posterior approval probability
+tracks the drifting oracle and its abrupt reset (Section~6); the systematic
+gap is the Laplace-probit underconfidence noted in the text.}
+\label{fig:drift}
+\end{figure}
+
+\paragraph{An honest negative result on the acquisition rule.}
+The rule ``query inside the \textsc{ask} band,'' taken literally as a
+sample-efficiency claim, is \emph{not} supported here: at a matched query
+budget its prequential boundary-decision accuracy is $76.5\% \pm 2.2$ against
+$78.4\% \pm 4.2$ for random querying. An ablation that switches the changepoint
+off and on (Table~\ref{tab:ablation}) shows the gap is non-positive in
+\emph{both} regimes, including with a fully stationary target, so the deficit
+is not caused by non-stationarity. It is the familiar behaviour of pure
+uncertainty sampling under class imbalance: a region the posterior has grown
+confident about leaves the \textsc{ask} band and is never re-probed, so its
+estimate is never refreshed and a silently reset tolerance there goes
+undetected. The time-decayed kernel down-weights stale evidence but does not
+itself generate new probes. (The per-condition magnitude is small and
+seed-noisy; the robust finding is the consistently non-positive sign.) A
+recency-aware or information-theoretic acquisition criterion (an
+expected-information or BALD rule with a forgetting term) is the natural
+remedy and is left to future work; it does not affect the inference,
+generalization, or burden-reduction results above, which use the same band as
+a pure escalation rule.
+
+\begin{table}[tb]
+\centering
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Oracle} & \textbf{\textsc{ask}-band active} & \textbf{Random query}
+& \textbf{Gap} \\
+\midrule
+Stationary (no changepoint)   & $80.6\%$ & $83.9\%$ & {\boldmath$-3.3$} pp \\
+With \S\ref{sec:nonstationary} changepoint & $75.8\%$ & $76.2\%$ & {\boldmath$-0.4$} pp \\
+\bottomrule
+\end{tabular}
+\caption{Acquisition ablation ($5$ seeds, matched budget, prequential
+boundary accuracy). The \textbf{bold} gap is the finding: it is non-positive
+in both regimes, so the \textsc{ask}-band rule does not beat random querying
+even when the target is stationary; the deficit is generic, not a
+changepoint artifact.}
+\label{tab:ablation}
+\end{table}
+
+\section{Concluding Remarks}
+
+We have argued that deciding when an agent may act autonomously is not a
+threshold to hand-tune but a latent human risk-tolerance function to learn,
+and that doing so is structurally an instance of Preferential Bayesian
+Optimization specialized to unary approve/deny feedback. The contribution is
+the mechanism the governance literature leaves implicit: a GP-probit policy
+gateway whose allow/escalate/block boundary adapts from feedback, generalizes
+across correlated actions through a structured kernel, and tracks a drifting
+supervisor through a time-decayed component.
+
+The simulation study supports the parts of this story that concern
+\emph{inference}: the gateway recovers a non-stationary boundary it never
+observes directly, transfers evidence to unqueried action-context
+combinations far better than an independent learner, tracks an abrupt
+changepoint, and cuts human interruptions substantially relative to escalating
+everything. It also disciplines one claim: the \textsc{ask} band is a sound
+\emph{escalation} rule, but treating it as a sample-efficient
+\emph{acquisition} rule does not hold under class imbalance, independently of
+non-stationarity. We report this rather than tune it away, and read it as
+locating the open problem precisely in the acquisition criterion rather than
+in the formulation. The remaining gap is empirical: no public dataset tracks a
+single supervisor's per-action decisions as their tolerance drifts, so a
+recency-aware acquisition rule and a longitudinal human study are the natural
+next steps. We see the value of the formulation less in the present numbers,
+which are simulated by necessity, than in turning a hand-set autonomy tier
+into an object that can be learned, audited, and questioned.
 
 \bibliographystyle{plainnat}
 \bibliography{references}

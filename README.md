@@ -4,6 +4,8 @@ This repository contains a short manuscript formalizing trust calibration for
 agentic tool use as a preference-learning problem, and a self-contained
 experiment that implements and stress-tests that formulation.
 
+**Paper: [`manuscript/main.pdf`](manuscript/main.pdf)** (compiled PDF, tracked in-repo).
+
 - `manuscript/` LaTeX source of the paper (`main.tex`, `references.bib`); the
   Simulation Study section and Conclusion report the results below.
 - `experiment/` runnable implementation, tests, generated figures and report.

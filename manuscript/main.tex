@@ -67,6 +67,25 @@ kernel component in the spirit of non-stationary covariance functions
 \citep{paciorek2003nonstationary} and, for abrupt shifts, Bayesian online
 changepoint detection \citep{adams2007bocd}.
 
+This progressive view of autonomy has deep roots in the trust-in-automation
+literature: \citet{lee2004trust} characterized appropriate reliance as the
+alignment of trust with actual system trustworthiness, and
+\citet{devisser2020longitudinal} extended this to \emph{longitudinal} trust
+calibration in human--robot teams, precisely the dynamic our time-decaying
+kernel (\S\ref{sec:nonstationary}) is meant to capture. The concern has
+resurfaced sharply for large-language-model agents, where graduated autonomy
+has emerged as an explicit deployment axis alongside raw capability
+\citep{morris2024levels}. Recent work catalogs the risks of increasingly
+agentic systems \citep{chan2023harms}, argues for visibility and oversight
+mechanisms over deployed agents \citep{chan2024visibility}, and proposes
+governance practices in which a human retains approval authority over
+consequential actions \citep{shavit2023practices}. These accounts are largely
+qualitative and taxonomic: they argue \emph{why} graduated autonomy matters
+and \emph{what} should be governed, but leave the escalation policy itself as
+a fixed, hand-specified tier. Our contribution is the missing mechanism: a
+learning rule that lets the auto-approve/escalate boundary adapt from human
+feedback rather than being set by hand.
+
 \section{Setup}
 
 At each decision point $t = 1, 2, \ldots$, the policy gateway observes a proposed agent action $a_t \in \mathcal{A}$ and an execution context $c_t \in \mathcal{C}$, where:

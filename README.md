@@ -4,8 +4,21 @@ This repository contains a short manuscript formalizing trust calibration for
 agentic tool use as a preference-learning problem, and a self-contained
 experiment that implements and stress-tests that formulation.
 
-- `manuscript/` LaTeX source of the paper (`main.tex`, `references.bib`).
+- `manuscript/` LaTeX source of the paper (`main.tex`, `references.bib`); the
+  Simulation Study section and Conclusion report the results below.
 - `experiment/` runnable implementation, tests, generated figures and report.
+
+## Motivation
+
+Today's coding agents gate actions with a binary switch: auto-run, or deny. A
+hard deny does not pause the run for a human; the agent receives a refusal and
+keeps going, often routing around the obstacle in ways that are worse than
+asking would have been. The missing primitive is not *block* but *escalate*,
+and the threshold for when to escalate should be learned from the supervisor's
+own approve/deny history rather than hand-written. The manuscript formalizes
+this as a preference-learning problem: structurally an instance of
+Preferential Bayesian Optimization, specialized to unary approve/deny
+feedback, with a three-tier allow/ask/block gateway.
 
 ## What the experiment is (and is not)
 
@@ -61,7 +74,8 @@ authoritative summary; the headline numbers are reproduced there.
 Supported by the simulation:
 
 - The ASK band narrows as the posterior concentrates and the auto-approve
-  rate rises toward the manuscript's target operating point.
+  rate rises substantially (toward, but not reaching, the manuscript's
+  85-90% target band).
 - A large reduction in human interruptions versus the always-escalate status
   quo, at high auto-decision accuracy and a bounded false-allow rate.
 - Correlated generalization: the GP transfers evidence to an unqueried
@@ -72,12 +86,14 @@ Supported by the simulation:
 Reported honestly as a negative result:
 
 - The Section 5 acquisition rule taken literally ("query inside the ASK
-  band") is **not** more sample-efficient than random querying under the
-  Section 6 changepoint. Confident regions leave the ASK band and are never
-  re-probed, so an abrupt tolerance shift there is missed; `k_time`
-  down-weights stale evidence but does not generate new probes. A
-  recency-aware or information-theoretic acquisition rule is the natural
-  remedy and is noted as future work in the manuscript.
+  band") is **not** more sample-efficient than random querying. An ablation
+  shows the deficit is present even with a stationary target, so it is not
+  caused by the Section 6 changepoint: it is the generic behaviour of
+  uncertainty sampling under class imbalance (confident regions leave the ASK
+  band and are never re-probed; `k_time` down-weights stale evidence but does
+  not itself generate new probes). The three-tier escalate design is sound;
+  only the rule for *what* to escalate is not, and a recency-aware or
+  information-theoretic acquisition rule is the noted future-work remedy.
 
 The posterior is also somewhat underconfident at the kernel-far tail
 (calibration is partial, not perfect); this is shown rather than tuned away.

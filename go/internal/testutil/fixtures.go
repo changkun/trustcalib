@@ -45,7 +45,7 @@ func (p PackedJSON) Packed() kernel.Packed {
 func dense(rows [][]float64) *mat.Dense {
 	n := len(rows)
 	if n == 0 {
-		return mat.NewDense(0, 0, nil)
+		return &mat.Dense{}
 	}
 	d := len(rows[0])
 	m := mat.NewDense(n, d, nil)

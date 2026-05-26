@@ -25,6 +25,23 @@ func TestTuneThresholdsSeparable(t *testing.T) {
 	}
 }
 
+func TestLinspace(t *testing.T) {
+	g := linspace(0.05, 0.95, 19)
+	if len(g) != 19 || g[0] != 0.05 || g[18] != 0.95 {
+		t.Fatalf("linspace = %v", g)
+	}
+	if single := linspace(0.5, 0.9, 1); len(single) != 1 || single[0] != 0.5 {
+		t.Fatalf("linspace num=1 = %v", single)
+	}
+}
+
+func TestTuneThresholdsEmpty(t *testing.T) {
+	low, high := TuneThresholds(nil, nil, 0.02, 0.05)
+	if low != 0.35 || high != 0.65 {
+		t.Fatalf("empty tune should fall back to defaults, got (%v,%v)", low, high)
+	}
+}
+
 // TestTuneThresholdsFallback: when nothing is feasible (pure noise), fall back
 // to the default band.
 func TestTuneThresholdsFallback(t *testing.T) {

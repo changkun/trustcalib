@@ -39,10 +39,16 @@ time `t`.
 The gateway predicts an **approval probability** `p_hat(x)` and applies a
 three-tier rule:
 
-```
-ALLOW  if p_hat > tau_high     (auto-approve, no human)
-BLOCK  if p_hat < tau_low      (auto-deny, no human)
-ASK    otherwise               (escalate: query the human)
+```mermaid
+flowchart TD
+    x["decision point x = (a, c) at time t"] --> feat["featurize -> phi_tool, phi_ctx"]
+    feat --> gp["GP posterior: p_hat(x)"]
+    gp --> rule{"compare to thresholds"}
+    rule -->|"p_hat &gt; tau_high"| allow(["ALLOW (auto-approve)"])
+    rule -->|"p_hat &lt; tau_low"| block(["BLOCK (auto-deny)"])
+    rule -->|"otherwise"| ask(["ASK (escalate to human)"])
+    ask --> obs["human approves / denies -> Observe -> refit"]
+    obs -.->|new evidence| gp
 ```
 
 Only **ASK** points are shown to the human; their approve/deny answers become
@@ -74,16 +80,41 @@ taxonomy. The taxonomy lives only in `featurizer/trustcalib`; a harness that
 wants its own action/context space implements `featurizer.Featurizer` and never
 imports it. `config`, `persist` and `cmd` are leaf consumers.
 
-```
-kernel  <-  gp  <-  gateway  <-  config
-   ^         ^         ^           ^
-   +----- featurizer --+          |
-                  ^                |
-            featurizer/trustcalib  |
-                                   |
-              persist  ------------+
-                  ^
-            cmd/trustcalib-hook
+Arrows point from a package to the packages it imports:
+
+```mermaid
+graph TD
+    subgraph core["generic core — gonum only"]
+        kernel
+        gp
+        gateway
+        featurizer["featurizer (interface)"]
+    end
+    subgraph taxonomy["bundled taxonomy"]
+        tc["featurizer/trustcalib"]
+    end
+    subgraph consumers["leaf consumers"]
+        config
+        persist
+        cmd["cmd/trustcalib-hook"]
+    end
+
+    gp --> kernel
+    featurizer --> kernel
+    gateway --> gp
+    gateway --> featurizer
+    tc --> featurizer
+    config --> kernel
+    config --> gp
+    config --> gateway
+    config --> featurizer
+    persist --> config
+    persist --> gateway
+    persist --> featurizer
+    cmd --> persist
+    cmd --> config
+    cmd --> gateway
+    cmd --> tc
 ```
 
 ## The algorithm
@@ -245,11 +276,25 @@ $ echo '{"tool":"git_force_push","target":"prod_infra","task":"ops_maintenance",
 
 ### Typical flow in a harness
 
-1. On a proposed tool call, run `decide`.
-2. If the result is `allow`, proceed; if `block`, refuse; if `ask`, escalate to
-   the human.
-3. After the human responds to an escalation, run `observe` with `approved`.
-4. Periodically run `tune` once enough labels have accumulated.
+```mermaid
+sequenceDiagram
+    participant H as Harness
+    participant G as trustcalib-hook
+    participant U as Human
+    H->>G: decide {tool, target, task, arg_risk}
+    G-->>H: {decision, p_hat}
+    alt decision == allow
+        H->>H: run the tool
+    else decision == block
+        H->>H: refuse
+    else decision == ask
+        H->>U: escalate
+        U-->>H: approve / deny
+        H->>G: observe {..., approved}
+        G->>G: refit + persist state
+    end
+    Note over H,G: periodically run `tune` once enough labels accumulate
+```
 
 `allow` auto-decisions are not observed (no human label exists), matching the
 manuscript: only escalated points train the model.

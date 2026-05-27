@@ -234,6 +234,57 @@ To use a custom action/context space, implement `featurizer.Featurizer`
 (`Featurize(Point) (FeatureVec, error)`, `DimTool()`, `DimCtx()`) and pass it to
 `gateway.New` (or `config.Config.NewGateway`).
 
+## Mapping real tool calls to a Point
+
+The kernel never sees the `Point` strings directly — the featurizer turns them
+into a small numeric risk descriptor, and that is all the GP uses. So
+constructing a `Point` means producing features such that *similar-risk actions
+sit close together*, and every feature must be **knowable statically, before the
+action runs** (the whole purpose of gating).
+
+With the bundled `featurizer/trustcalib`:
+
+| Field | Becomes | How to fill it |
+|-------|---------|----------------|
+| `Tool` | reversibility, base-sensitivity, blast, category one-hot | the closest taxonomy profile for the action |
+| `Target` | a sensitivity scalar in [0,1] | the most sensitive resource the action touches |
+| `ArgRisk` | a 0/1 flag | whether a destructive argument pattern is present |
+| `Task` | a task one-hot | the agent's session intent (from the harness, not the action) |
+| `T` | recency weight via `k_time` | a monotonic decision counter (the CLI manages this) |
+
+Two principles make this well-defined even for coarse or compound actions:
+
+1. **The unit you featurize is the unit the human approves.** One tool call is
+   one `Point`, even if it is a shell command running a chain.
+2. **Reduce a chain to its worst case.** Take the most dangerous tool profile,
+   the most sensitive target touched, and the logical OR of the
+   destructive-argument flag across the whole command.
+
+A coarse tool like Bash is the hard case: the same tool is `ls` or `rm -rf /`,
+so tool identity alone is useless and the command *content* must drive `Target`
+and `ArgRisk`. The example package
+[`featurizer/bashmap`](featurizer/bashmap/bashmap.go) demonstrates the pattern
+with static, worst-case heuristics:
+
+```go
+import "github.com/changkun/trustcalib/featurizer/bashmap"
+
+// "ls && terraform apply" -> the deploy dominates:
+//   {Tool: "deploy", Target: "prod_infra", ArgRisk: 0, Task: "ops_maintenance"}
+p := bashmap.PointFromBash("ls && terraform apply -auto-approve", "ops_maintenance", t)
+dec, _ := g.Decide(p)
+```
+
+`Task` is supplied by the harness from the current goal, not parsed from the
+command. `bashmap` is a heuristic illustration, not a hardened parser; a real
+harness should analyze the properly parsed command and tune the rules to its own
+environment — or, for a genuinely different action space, implement its own
+`Featurizer` over a richer descriptor and ignore the bundled taxonomy entirely.
+One note on the bundled featurizer specifically: an unknown tool/target/task
+string returns an error, which the gateway turns into a fail-safe **ASK**; a
+production featurizer should instead map every possible action to a worst-case
+bucket so it never escalates merely because something is unrecognized.
+
 ## CLI hook
 
 `cmd/trustcalib-hook` is a stateless binary intended to be wired as an

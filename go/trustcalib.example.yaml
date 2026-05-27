@@ -1,0 +1,23 @@
+# trustcalib hyperparameters. Every key is optional; omitted keys fall back to
+# these manuscript defaults. Pass with: trustcalib-hook --config <this file>.
+
+kernel:
+  sigma2: 1.6      # signal variance (prior diagonal)
+  l_tool: 1.1      # RBF lengthscale for the tool feature block
+  l_ctx:  1.2      # RBF lengthscale for the context feature block
+  lambda: 200.0    # time lengthscale (Ornstein-Uhlenbeck decay, in steps)
+
+gp:
+  jitter:   1.0e-6 # Tikhonov regularization added to the kernel diagonal
+  max_iter: 100    # Newton iterations for the Laplace mode
+  tol:      1.0e-6 # convergence tolerance on the objective
+
+gateway:
+  tau_low:     0.35  # below -> BLOCK
+  tau_high:    0.65  # above -> ALLOW (between -> ASK)
+  refit_every: 8     # refit the model every N new labels
+  safety_eps:  0.02  # false-allow cap for threshold tuning (tightened to /2)
+  block_eps:   0.05  # false-block cap for threshold tuning
+  max_train:   2000  # sliding-window cap on training points (0 = unbounded)
+  max_hist:    2000  # sliding-window cap on tuning history (0 = unbounded)
+  min_tune_n:  30    # minimum labels before tuning leaves the default band

@@ -184,7 +184,7 @@ def run_gateway(
     res = GatewayResult(band=band, audit_rate=audit_rate)
     train_pts: list[DecisionPoint] = []
     train_y: list[int] = []
-    fitted = False
+    fitted = bool(getattr(model, "prefitted", False))  # fixed policies need no labels
     dirty = False
     recent_bald: deque[float] = deque(maxlen=bald_window)
     has_var = hasattr(model, "predict")

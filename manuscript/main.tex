@@ -29,7 +29,7 @@
 \large A Formalization of Trust Calibration for Agentic Tool Use}
 \author{Changkun Ou\\[2pt]
 \small Latere AI, Munich, Germany}
-\date{September 27, 2026 \quad (version 3, draft)}
+\date{September 28, 2026 \quad (version 3)}
 
 \begin{document}
 \maketitle
@@ -855,7 +855,10 @@ estimable. One limit is structural: the gateway cannot separate actions that
 look identical in its own features, so it cannot repair a judge blind spot its
 features do not expose. Argument-level features (for example static patterns
 in the command, as in the Go port's shell heuristics) are the remedy, not
-more calibration.
+more calibration. The released Go port implements this gateway for real
+harnesses: a featurizer over the judge's verdict and a command category,
+cost-derived thresholds, and audits whose sampling propensities are logged
+with each label.
 
 \paragraph{Simulation.} We keep the oracle, stream and seeds of
 Section~\ref{sec:simulation} and add a judge, with every setting fixed in a

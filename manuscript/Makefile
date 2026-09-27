@@ -10,7 +10,7 @@
 
 TECTONIC = tectonic
 MAIN     = main
-FIGS     = policy_evolution forgetting drift_tracking transfer query_savings calibration
+FIGS     = policy_evolution forgetting drift_tracking transfer query_savings calibration judge_reliability
 
 .PHONY: all arxiv clean
 

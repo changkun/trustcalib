@@ -4,14 +4,15 @@ This repository contains a manuscript that formalizes trust calibration for
 agentic tool use, a simulation study that tests it, a Lean 4 formalization of
 its theory, and a Go port of the gateway as an agent-harness plugin.
 
-**Paper: [`manuscript/main.pdf`](manuscript/main.pdf)** (version 2; version 1
-is [arXiv:2605.19151](https://arxiv.org/abs/2605.19151)).
+**Paper: [`manuscript/main.pdf`](manuscript/main.pdf)** (version 3; version 1
+is [arXiv:2605.19151](https://arxiv.org/abs/2605.19151); release tags `v1`,
+`v2`, `v3`).
 
 - `manuscript/` LaTeX source (`main.tex`, `references.bib`); every number in
   the paper is a macro in `manuscript/generated/`, written by the experiment.
 - `experiment/` runnable implementation, tests, figures and report.
 - `lean/` machine-checked proofs of the paper's propositions.
-- `go/` a Go port of the v1 gateway core for real agent harnesses.
+- `go/` a Go port of the gateway (library + CLI hook) for real agent harnesses.
 
 ## Motivation
 
@@ -22,13 +23,14 @@ asking would have been. The missing primitive is not *block* but *escalate*,
 and when to escalate should be learned from the supervisor's own approve/deny
 history rather than hand-written.
 
-## What the paper shows (version 2)
+## What the paper shows
 
 The gateway keeps a Gaussian-process posterior over a latent tolerance
 `f(x, t) = tau(t) - r(x) + h(x, t)` (static action risk `r`, drifting
 supervisor tolerance `tau`), observed through a probit likelihood on
-approve/deny feedback, and decides ALLOW / ASK / BLOCK. Five propositions,
-each machine-checked in `lean/`:
+approve/deny feedback, and decides ALLOW / ASK / BLOCK. Five propositions
+about the gateway (a further three about LLM judges follow below), each
+machine-checked in `lean/`:
 
 1. **Identifiability.** Unary approve/deny feedback identifies the allow/deny
    boundary; pairwise (preferential) feedback cannot, because it is invariant
@@ -87,11 +89,11 @@ Version 2 also corrects several claims of version 1 (listed in the paper's
 appendix), including the burden ratio: version 1's "~1.8x" compared
 full-stream queries against scored-phase actions.
 
-## Version 3 draft: an opaque LLM judge instead of a tool taxonomy
+## Version 3: an opaque LLM judge instead of a tool taxonomy
 
 Shell-centric harnesses have no fixed tool set; an LLM judge (such as Claude
 Code's auto-mode classifier) decides allow/block from a restricted view. The
-v3 draft (git tag `v2` is the frozen v2, `v1` the original) adds Section 12 and
+third version (release tags `v1`, `v2`, `v3`) adds Section 12 and
 `lean/TrustCalib/Judge.lean`:
 
 - **Is the judge trustworthy?** A judge's false-allow rate for a supervisor
@@ -125,7 +127,7 @@ experiment/
   tests/       correctness tests (kernels, Laplace, Chow, forgetting, audits)
 lean/          Lean 4 + Mathlib proofs (see lean/README.md)
 manuscript/    paper source; `make` builds main.pdf, `make arxiv` the bundle
-go/            Go port of the v1 gateway (library + CLI hook)
+go/            Go port of the gateway (library + CLI hook)
 ```
 
 ## Run
@@ -144,7 +146,7 @@ uv run pytest                            # correctness tests
 
 Each run is multi-seed and deterministic given the seeds.
 
-The Go port in `go/` implements the version-1 gateway (product kernel, grid
-threshold tuning). Its `Tune()` sees only escalated labels, whose predicted
-probabilities all lie inside the band, so it returns the default band; the
-version-2 cost-derived thresholds and additive kernel are not yet ported.
+The Go port in `go/` implements the gateway for real harnesses: product
+(v1) and additive (v2) kernels, cost-derived thresholds, random audits with
+logged propensities and a certification check, and a judge featurizer for
+shell-centric harnesses (see `go/README.md`).

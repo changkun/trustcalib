@@ -268,3 +268,80 @@ func pearson(a, b []float64) float64 {
 	}
 	return cov / math.Sqrt(va*vb)
 }
+
+// TestFitGoldenAdditive checks the fitted mode, gradient and log marginal
+// under the additive kernel against the Python reference.
+func TestFitGoldenAdditive(t *testing.T) {
+	var fix struct {
+		Kernel      testutil.AdditiveParams `json:"kernel"`
+		Train       testutil.PackedJSON     `json:"train"`
+		Y01         []int                   `json:"y01"`
+		FHat        []float64               `json:"f_hat"`
+		Grad        []float64               `json:"grad"`
+		LogMarginal float64                 `json:"log_marginal"`
+	}
+	testutil.Load(t, "laplace_fit_additive.json", &fix)
+
+	m := NewLaplaceGPC(fix.Kernel.Kernel())
+	if err := m.Fit(fix.Train.Packed(), fix.Y01); err != nil {
+		t.Fatal(err)
+	}
+	approxSlice(t, "f_hat", m.fHat, fix.FHat, 1e-7)
+	approxSlice(t, "grad", m.grad, fix.Grad, 1e-7)
+	if math.Abs(m.logMarginal-fix.LogMarginal) > 1e-6 {
+		t.Errorf("log_marginal = %.10g, want %.10g", m.logMarginal, fix.LogMarginal)
+	}
+}
+
+// TestPredictGoldenAdditive checks predictive mean/var/prob under the additive
+// kernel against the Python reference.
+func TestPredictGoldenAdditive(t *testing.T) {
+	var fix struct {
+		Kernel testutil.AdditiveParams `json:"kernel"`
+		Train  testutil.PackedJSON     `json:"train"`
+		Y01    []int                   `json:"y01"`
+		Query  testutil.PackedJSON     `json:"query"`
+		FBar   []float64               `json:"f_bar"`
+		Var    []float64               `json:"var"`
+		Pi     []float64               `json:"pi"`
+	}
+	testutil.Load(t, "predict_additive.json", &fix)
+
+	m := NewLaplaceGPC(fix.Kernel.Kernel())
+	if err := m.Fit(fix.Train.Packed(), fix.Y01); err != nil {
+		t.Fatal(err)
+	}
+	fBar, variance, pi, err := m.Predict(fix.Query.Packed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	approxSlice(t, "f_bar", fBar, fix.FBar, 1e-7)
+	approxSlice(t, "var", variance, fix.Var, 1e-7)
+	approxSlice(t, "pi", pi, fix.Pi, 1e-7)
+}
+
+// TestAdditiveRemembersStaticRisk: a point labelled long ago keeps a
+// confident prediction under the additive kernel, while the product kernel
+// forgets it and returns to p_hat = 1/2 (manuscript Proposition 4).
+func TestAdditiveRemembersStaticRisk(t *testing.T) {
+	train := packed1D([]float64{-1, -1, -1, 1, 1, 1})
+	y := []int{0, 0, 0, 1, 1, 1}
+	later := packed1D([]float64{1})
+	later.T[0] = 5000 // 25 product lengthscales, ~55 additive lengthscales
+
+	pm := NewLaplaceGPC(kernel.DefaultKernel())
+	am := NewLaplaceGPC(kernel.DefaultAdditiveKernel())
+	for _, m := range []*LaplaceGPC{pm, am} {
+		if err := m.Fit(train, y); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pp, _ := pm.PredictProb(later)
+	ap, _ := am.PredictProb(later)
+	if math.Abs(pp[0]-0.5) > 1e-6 {
+		t.Errorf("product kernel should forget: p_hat = %v, want 0.5", pp[0])
+	}
+	if ap[0] < 0.6 {
+		t.Errorf("additive kernel should remember the approval: p_hat = %v", ap[0])
+	}
+}

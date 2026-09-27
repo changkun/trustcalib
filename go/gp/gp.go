@@ -13,10 +13,12 @@ import (
 	"github.com/changkun/trustcalib/kernel"
 )
 
-// LaplaceGPC is a GP probit classifier. Construct with NewLaplaceGPC; Jitter,
-// MaxIter and Tol may be overridden before the first Fit.
+// LaplaceGPC is a GP probit classifier over any kernel.Kernel (for example
+// kernel.ProductKernel or kernel.AdditiveKernel). Construct with
+// NewLaplaceGPC; Jitter, MaxIter and Tol may be overridden before the first
+// Fit.
 type LaplaceGPC struct {
-	Kernel  kernel.ProductKernel
+	Kernel  kernel.Kernel
 	Jitter  float64
 	MaxIter int
 	Tol     float64
@@ -30,9 +32,9 @@ type LaplaceGPC struct {
 	logMarginal float64
 }
 
-// NewLaplaceGPC returns a classifier with the manuscript defaults (jitter 1e-6,
-// 100 iterations, tolerance 1e-6).
-func NewLaplaceGPC(k kernel.ProductKernel) *LaplaceGPC {
+// NewLaplaceGPC returns a classifier over kernel k with the manuscript
+// defaults (jitter 1e-6, 100 iterations, tolerance 1e-6).
+func NewLaplaceGPC(k kernel.Kernel) *LaplaceGPC {
 	return &LaplaceGPC{Kernel: k, Jitter: 1e-6, MaxIter: 100, Tol: 1e-6}
 }
 

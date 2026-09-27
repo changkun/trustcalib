@@ -4,9 +4,13 @@ Run from the repository root:
 
     PYTHONPATH=. uv run python go/testdata/gen/export_fixtures.py
 
-It imports only experiment.kernel / experiment.gp (no oracle, no matplotlib,
-no stream generator) and builds a Packed directly from a fixed, hardcoded
-feature matrix, so the fixtures are independent of the RNG-driven simulation.
+The kernel/GP fixtures import only experiment.kernel / experiment.gp (no
+oracle, no matplotlib, no stream generator) and build a Packed directly from a
+seeded feature matrix, so they are independent of the RNG-driven simulation.
+Each of the kernel/fit/predict fixtures is written twice: once for the v1
+ProductKernel (kernel_full.json, laplace_fit.json, predict.json) and once for
+the v2 AdditiveKernel on the same points and labels (kernel_additive.json,
+laplace_fit_additive.json, predict_additive.json).
 The generated arrays are written verbatim to JSON, so the Go tests never need
 to reproduce NumPy's RNG -- they only re-run the deterministic kernel/GP math.
 """
@@ -20,7 +24,7 @@ import numpy as np
 from scipy.special import log_ndtr
 from scipy.stats import norm
 
-from experiment.kernel import Packed, ProductKernel
+from experiment.kernel import AdditiveKernel, Packed, ProductKernel
 from experiment.gp import LaplaceGPC
 from experiment.data import make_stream
 from experiment.oracle import OracleConfig, oracle_decision, sample_label
@@ -31,6 +35,9 @@ OUT = os.path.join(os.path.dirname(__file__), "..", "fixtures")
 # relying on its own defaults).
 SIGMA2, L_TOOL, L_CTX, LAM = 1.6, 1.1, 1.2, 200.0
 D_TOOL, D_CTX = 11, 9
+
+# Additive (v2) kernel hyperparameters: the AdditiveKernel dataclass defaults.
+S_STATIC, S_GLOBAL, S_INTER, ADD_LAM = 1.6, 1.0, 0.6, 90.0
 
 
 def make_packed(rng: np.random.Generator, n: int, t0: int) -> Packed:
@@ -51,6 +58,17 @@ def packed_dict(p: Packed) -> dict:
 
 def kernel_params() -> dict:
     return {"sigma2": SIGMA2, "l_tool": L_TOOL, "l_ctx": L_CTX, "lam": LAM}
+
+
+def additive_params() -> dict:
+    return {
+        "s_static": S_STATIC,
+        "s_global": S_GLOBAL,
+        "s_inter": S_INTER,
+        "l_tool": L_TOOL,
+        "l_ctx": L_CTX,
+        "lam": ADD_LAM,
+    }
 
 
 def main() -> None:
@@ -104,6 +122,11 @@ def main() -> None:
         },
     )
 
+    # 3b) the same kernel matrix, fit and prediction for the additive kernel.
+    # Reusing train/y01/query leaves the RNG stream (and so every fixture
+    # above) unchanged.
+    export_additive(train, y01, query)
+
     # 4) stable logCDF / logPDF over a wide grid, including the deep tail
     z = np.concatenate(
         [
@@ -127,6 +150,45 @@ def main() -> None:
     export_trajectory()
 
     print("wrote fixtures to", os.path.normpath(OUT))
+
+
+def export_additive(train: Packed, y01: np.ndarray, query: Packed) -> None:
+    k = AdditiveKernel(
+        s_static=S_STATIC, s_global=S_GLOBAL, s_inter=S_INTER,
+        l_tool=L_TOOL, l_ctx=L_CTX, lam=ADD_LAM,
+    )
+    dump(
+        "kernel_additive.json",
+        {"kernel": additive_params(), "train": packed_dict(train), "K": k.full(train).tolist()},
+    )
+
+    m = LaplaceGPC(k)
+    m.fit(train, y01)
+    dump(
+        "laplace_fit_additive.json",
+        {
+            "kernel": additive_params(),
+            "train": packed_dict(train),
+            "y01": y01.tolist(),
+            "f_hat": m._f_hat.tolist(),
+            "grad": m._grad.tolist(),
+            "log_marginal": float(m.log_marginal),
+        },
+    )
+
+    f_bar, var, pi = m.predict(query)
+    dump(
+        "predict_additive.json",
+        {
+            "kernel": additive_params(),
+            "train": packed_dict(train),
+            "y01": y01.tolist(),
+            "query": packed_dict(query),
+            "f_bar": f_bar.tolist(),
+            "var": var.tolist(),
+            "pi": pi.tolist(),
+        },
+    )
 
 
 def export_trajectory() -> None:

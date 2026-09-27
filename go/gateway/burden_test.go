@@ -26,15 +26,26 @@ type trajPoint struct {
 // always-escalate baseline. The Python oracle is not ported; only its recorded
 // labels/decisions are replayed.
 func TestGatewayBurden(t *testing.T) {
+	cfg := config.Default().GatewayConfig()
+	runBurden(t, gateway.New(trustcalib.New(), config.Default().NewModel(), cfg))
+}
+
+// TestGatewayBurdenAdditive replays the same trajectory with the additive
+// (v2) kernel and asserts the same bounds.
+func TestGatewayBurdenAdditive(t *testing.T) {
+	c := config.Default()
+	c.Kernel.Type = config.KernelAdditive
+	runBurden(t, c.NewGateway(trustcalib.New()))
+}
+
+func runBurden(t *testing.T, g *gateway.Gateway) {
+	t.Helper()
 	var traj struct {
 		T1     int         `json:"t1"`
 		T2     int         `json:"t2"`
 		Points []trajPoint `json:"points"`
 	}
 	testutil.Load(t, "trajectory.json", &traj)
-
-	cfg := config.Default().GatewayConfig()
-	g := gateway.New(trustcalib.New(), config.Default().NewModel(), cfg)
 
 	var (
 		testTotal, testAuto, autoCorrect int

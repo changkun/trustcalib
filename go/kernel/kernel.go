@@ -1,15 +1,39 @@
-// Package kernel implements the structured product kernel from Section 4 of
-// the trustcalib manuscript:
+// Package kernel implements the structured kernels over (action, context,
+// time) from Section 4 of the trustcalib manuscript. Two kernels share the
+// same feature blocks and implement the Kernel interface.
+//
+// ProductKernel, the version-1 kernel,
 //
 //	k(x, x') = sigma2 * k_tool(a, a') * k_ctx(c, c') * k_time(t, t')
 //
-// k_tool and k_ctx are squared-exponential (RBF) kernels over the tool and
-// context feature blocks; k_time = exp(-|t-t'|/lambda) is the Ornstein-
-// Uhlenbeck covariance for non-stationarity. The product of PSD kernels is PSD
-// (Schur product). Each block's self-similarity is 1, so the prior variance on
-// the diagonal is exactly sigma2.
+// multiplies every component by k_time, so all evidence, including the static
+// risk structure of an action, is forgotten at rate 1/lambda (manuscript
+// Proposition 4): once the labels near an action are older than a few lambda,
+// its posterior returns to the prior p_hat = 1/2 and it is re-escalated.
 //
-// The kernel is stateless and operates on raw feature vectors (a Packed),
+// AdditiveKernel, the version-2 kernel,
+//
+//	k(x, x') = s_static * k_x(x, x')                  static action risk r(x)
+//	         + s_global * k_time(t, t')               shared tolerance tau(t)
+//	         + s_inter  * k_x(x, x') * k_time(t, t')  local drift
+//
+// with k_x = k_tool * k_ctx, mirrors the decomposition f(x, t) = tau(t) - r(x)
+// (manuscript Section 3). Only the time-coupled components forget. The static
+// component never decays, so what has been learned about how risky an action
+// is persists; every label, whatever its action, updates the shared tolerance
+// tau(t); and the interaction component lets individual actions drift
+// locally.
+//
+// Block kernels: k_tool and k_ctx are squared-exponential (RBF) kernels
+// exp(-d²/(2 l²)) over the tool and context feature blocks, and k_time =
+// exp(-|t-t'|/lambda) is the Ornstein-Uhlenbeck covariance for
+// non-stationarity. Every block is PSD with unit self-similarity, and sums and
+// (Schur) products of PSD kernels are PSD, so both kernels are valid
+// covariance functions whose prior variance (the diagonal) is the sum of
+// their component scales: sigma2 for the product kernel and
+// s_static + s_global + s_inter for the additive one.
+//
+// The kernels are stateless and operate on raw feature vectors (a Packed),
 // independent of any domain taxonomy.
 package kernel
 
@@ -30,6 +54,23 @@ type Packed struct {
 
 // Len returns the number of points.
 func (p Packed) Len() int { return len(p.T) }
+
+// Kernel is a covariance function over packed decision points. ProductKernel
+// and AdditiveKernel implement it; the GP classifier (package gp) accepts any
+// implementation.
+type Kernel interface {
+	// Full returns the symmetric (N x N) train-train covariance K.
+	Full(p Packed) *mat.SymDense
+	// Cross returns the (len(p) x len(q)) cross covariance (rows p, cols q).
+	Cross(p, q Packed) *mat.Dense
+	// Diag returns the prior variances diag(K).
+	Diag(p Packed) []float64
+}
+
+var (
+	_ Kernel = ProductKernel{}
+	_ Kernel = AdditiveKernel{}
+)
 
 // ProductKernel holds the kernel hyperparameters. The zero value is not valid;
 // use DefaultKernel or set every field.
@@ -83,31 +124,36 @@ func rowSqNorms(a *mat.Dense, m int) []float64 {
 	return out
 }
 
-// blocks computes the full (m x n) product-kernel matrix between p and q.
-func (k ProductKernel) blocks(p, q Packed) *mat.Dense {
+// staticSim returns the (m x n) matrix of static action similarities
+// k_x = k_tool * k_ctx between p and q (kernel.py _k_x).
+func staticSim(p, q Packed, lTool, lCtx float64) *mat.Dense {
 	d2tool := sqdist(p.PhiTool, q.PhiTool)
 	d2ctx := sqdist(p.PhiCtx, q.PhiCtx)
 	m, n := d2tool.Dims()
 
-	twoLTool2 := 2.0 * k.LTool * k.LTool
-	twoLCtx2 := 2.0 * k.LCtx * k.LCtx
+	twoLTool2 := 2.0 * lTool * lTool
+	twoLCtx2 := 2.0 * lCtx * lCtx
 
 	out := mat.NewDense(m, n, nil)
 	for i := 0; i < m; i++ {
 		for j := 0; j < n; j++ {
 			kTool := math.Exp(-d2tool.At(i, j) / twoLTool2)
 			kCtx := math.Exp(-d2ctx.At(i, j) / twoLCtx2)
-			kTime := math.Exp(-math.Abs(p.T[i]-q.T[j]) / k.Lambda)
-			out.Set(i, j, k.Sigma2*kTool*kCtx*kTime)
+			out.Set(i, j, kTool*kCtx)
 		}
 	}
 	return out
 }
 
-// Full returns the symmetric (N x N) train-train covariance K.
-func (k ProductKernel) Full(p Packed) *mat.SymDense {
-	n := p.Len()
-	b := k.blocks(p, p)
+// timeSim is the Ornstein-Uhlenbeck time covariance exp(-|t-u|/lambda)
+// (kernel.py _k_time).
+func timeSim(t, u, lambda float64) float64 {
+	return math.Exp(-math.Abs(t-u) / lambda)
+}
+
+// symmetric copies the upper triangle of a square matrix into a SymDense.
+func symmetric(b *mat.Dense) *mat.SymDense {
+	n, _ := b.Dims()
 	s := mat.NewSymDense(n, nil)
 	for i := 0; i < n; i++ {
 		for j := i; j < n; j++ {
@@ -115,6 +161,32 @@ func (k ProductKernel) Full(p Packed) *mat.SymDense {
 		}
 	}
 	return s
+}
+
+// constant returns a slice of n copies of v.
+func constant(n int, v float64) []float64 {
+	out := make([]float64, n)
+	for i := range out {
+		out[i] = v
+	}
+	return out
+}
+
+// blocks computes the full (m x n) product-kernel matrix between p and q.
+func (k ProductKernel) blocks(p, q Packed) *mat.Dense {
+	out := staticSim(p, q, k.LTool, k.LCtx)
+	m, n := out.Dims()
+	for i := 0; i < m; i++ {
+		for j := 0; j < n; j++ {
+			out.Set(i, j, k.Sigma2*out.At(i, j)*timeSim(p.T[i], q.T[j], k.Lambda))
+		}
+	}
+	return out
+}
+
+// Full returns the symmetric (N x N) train-train covariance K.
+func (k ProductKernel) Full(p Packed) *mat.SymDense {
+	return symmetric(k.blocks(p, p))
 }
 
 // Cross returns the (len(p) x len(q)) train-test cross covariance (rows p,
@@ -125,9 +197,61 @@ func (k ProductKernel) Cross(p, q Packed) *mat.Dense {
 
 // Diag returns the prior variances diag(K); every entry equals Sigma2.
 func (k ProductKernel) Diag(p Packed) []float64 {
-	out := make([]float64, p.Len())
-	for i := range out {
-		out[i] = k.Sigma2
+	return constant(p.Len(), k.Sigma2)
+}
+
+// AdditiveKernel holds the hyperparameters of the version-2 kernel
+//
+//	s_static * k_x + s_global * k_time + s_inter * k_x * k_time
+//
+// with k_x = k_tool * k_ctx, a port of experiment/kernel.py AdditiveKernel.
+// The static component does not forget; the global and interaction components
+// decay with time lengthscale Lambda. The zero value is not valid; use
+// DefaultAdditiveKernel or set every field.
+type AdditiveKernel struct {
+	SStatic float64 // scale of the static action-risk component k_x
+	SGlobal float64 // scale of the shared-tolerance component k_time
+	SInter  float64 // scale of the local-drift component k_x * k_time
+	LTool   float64 // RBF lengthscale for the tool block
+	LCtx    float64 // RBF lengthscale for the context block
+	Lambda  float64 // time lengthscale (OU decay, in steps)
+}
+
+// DefaultAdditiveKernel returns the manuscript version-2 defaults (kernel.py
+// AdditiveKernel dataclass defaults).
+func DefaultAdditiveKernel() AdditiveKernel {
+	return AdditiveKernel{SStatic: 1.6, SGlobal: 1.0, SInter: 0.6, LTool: 1.1, LCtx: 1.2, Lambda: 90.0}
+}
+
+// PriorVar returns the prior variance SStatic + SGlobal + SInter.
+func (k AdditiveKernel) PriorVar() float64 { return k.SStatic + k.SGlobal + k.SInter }
+
+// blocks computes the full (m x n) additive-kernel matrix between p and q.
+func (k AdditiveKernel) blocks(p, q Packed) *mat.Dense {
+	out := staticSim(p, q, k.LTool, k.LCtx)
+	m, n := out.Dims()
+	for i := 0; i < m; i++ {
+		for j := 0; j < n; j++ {
+			kx := out.At(i, j)
+			kt := timeSim(p.T[i], q.T[j], k.Lambda)
+			out.Set(i, j, k.SStatic*kx+k.SGlobal*kt+k.SInter*kx*kt)
+		}
 	}
 	return out
+}
+
+// Full returns the symmetric (N x N) train-train covariance K.
+func (k AdditiveKernel) Full(p Packed) *mat.SymDense {
+	return symmetric(k.blocks(p, p))
+}
+
+// Cross returns the (len(p) x len(q)) train-test cross covariance (rows p,
+// cols q).
+func (k AdditiveKernel) Cross(p, q Packed) *mat.Dense {
+	return k.blocks(p, q)
+}
+
+// Diag returns the prior variances diag(K); every entry equals PriorVar().
+func (k AdditiveKernel) Diag(p Packed) []float64 {
+	return constant(p.Len(), k.PriorVar())
 }

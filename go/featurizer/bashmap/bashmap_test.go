@@ -46,3 +46,25 @@ func TestChainTakesWorstCase(t *testing.T) {
 		t.Fatalf("chain not reduced to worst case: %+v", p)
 	}
 }
+
+func TestCategoryFromBash(t *testing.T) {
+	cases := map[string]string{
+		"ls -la":                         "read",
+		"cat README.md | head":           "read",
+		"git status":                     "read",
+		"git commit -m wip":              "vcs",
+		"git push --force origin main":   "vcs",
+		"go test ./...":                  "exec",
+		"pip install requests":           "exec",
+		"echo hello":                     "exec",
+		"rm -rf build/":                  "write",
+		"psql app_db -c 'select 1'":      "db",
+		"terraform apply -auto-approve":  "deploy",
+		"ls && kubectl delete pod web-0": "deploy",
+	}
+	for cmd, want := range cases {
+		if got := bashmap.CategoryFromBash(cmd); got != want {
+			t.Errorf("CategoryFromBash(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+}

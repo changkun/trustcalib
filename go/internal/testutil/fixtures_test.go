@@ -9,6 +9,13 @@ func TestKernelParamsBuild(t *testing.T) {
 	}
 }
 
+func TestAdditiveParamsBuild(t *testing.T) {
+	k := AdditiveParams{SStatic: 1.6, SGlobal: 1, SInter: 0.6, LTool: 1.1, LCtx: 1.2, Lam: 90}.Kernel()
+	if k.SStatic != 1.6 || k.SGlobal != 1 || k.SInter != 0.6 || k.LTool != 1.1 || k.LCtx != 1.2 || k.Lambda != 90 {
+		t.Fatalf("additive kernel build: %+v", k)
+	}
+}
+
 func TestPackedJSON(t *testing.T) {
 	pj := PackedJSON{
 		PhiTool: [][]float64{{1, 2}, {3, 4}},

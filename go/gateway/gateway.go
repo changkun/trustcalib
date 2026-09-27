@@ -10,8 +10,21 @@
 //	ASK    otherwise
 //
 // The ASK band is where the human is queried; only observed (queried) points
-// enter the training set. The model refits online as labels accumulate; the
-// thresholds are tuned from the collected (p_hat, human-label) history.
+// enter the training set, and the model refits online as labels accumulate.
+//
+// Thresholds. With Config.Costs set, the band is derived in closed form from
+// the costs of a false allow, a false block and one escalation (Chow's
+// reject option, see Costs); this is the recommended configuration. Without
+// costs the band is the configured (TauLow, TauHigh), which Tune can replace
+// by a grid search over the collected history; that search is kept for
+// backward compatibility but degenerates to the default band (see Tune).
+//
+// Audits. Auto-decided actions produce no label, so their errors are
+// invisible (selective labels). With Config.AuditRate = eps > 0, DecideAudit
+// also shows each auto-decided action to the human with probability eps;
+// ObserveAudit records the answer with its propensity, which gives an unbiased
+// Horvitz-Thompson estimate of the false-allow rate (FalseAllowEstimate) and a
+// certification test (CertifiedFalseAllowBelow), manuscript Proposition 5.
 package gateway
 
 import (
@@ -41,15 +54,33 @@ func (d Decision) String() string {
 
 // Config holds the policy hyperparameters.
 type Config struct {
-	TauLow     float64 // initial/default block threshold
-	TauHigh    float64 // initial/default allow threshold
+	TauLow     float64 // initial/default block threshold (ignored when Costs is set)
+	TauHigh    float64 // initial/default allow threshold (ignored when Costs is set)
 	RefitEvery int     // refit after this many new labels
 	SafetyEps  float64 // false-allow cap for tuning (tightened to /2)
 	BlockEps   float64 // false-block cap for tuning
 	MaxTrain   int     // sliding-window cap on training points (0 = unbounded)
 	MaxHist    int     // sliding-window cap on tuning history (0 = unbounded)
 	MinTuneN   int     // minimum labels before Tune leaves the default band
+
+	// Costs, when set and valid, fixes the thresholds to the cost-derived
+	// Chow band (Costs.Band); Tune then returns it unchanged.
+	Costs *Costs
+	// AuditRate is the probability with which DecideAudit samples an
+	// auto-decided action for a human audit (0 = no audits).
+	AuditRate float64
 }
+
+// Thresholds returns the configured band: the cost-derived band when Costs is
+// set and valid, otherwise (TauLow, TauHigh).
+func (c Config) Thresholds() (low, high float64) {
+	if c.costsValid() {
+		return c.Costs.Band()
+	}
+	return c.TauLow, c.TauHigh
+}
+
+func (c Config) costsValid() bool { return c.Costs != nil && c.Costs.Validate() == nil }
 
 // DefaultConfig returns the manuscript defaults plus sane caps for a long-
 // running deployment.
@@ -74,8 +105,10 @@ type Gateway struct {
 
 	trainPts  []featurizer.Point
 	trainY    []int
+	trainInfo []LabelInfo // provenance of each training label (parallel)
 	pHatHist  []float64
 	labelHist []int
+	audit     AuditStats
 
 	sinceRefit int
 	tuned      bool
@@ -86,18 +119,20 @@ type Gateway struct {
 // New creates a gateway over the given featurizer and (already configured)
 // model. The model's kernel and GP hyperparameters are taken as-is.
 func New(f featurizer.Featurizer, model *gp.LaplaceGPC, cfg Config) *Gateway {
+	low, high := cfg.Thresholds()
 	return &Gateway{
 		f:       f,
 		model:   model,
 		cfg:     cfg,
-		tauLow:  cfg.TauLow,
-		tauHigh: cfg.TauHigh,
+		tauLow:  low,
+		tauHigh: high,
 	}
 }
 
-// Decide returns the policy decision and p_hat for a point without recording a
-// label. On cold start (model not yet fitted) or an unknown point it fails safe
-// to ASK with p_hat = 0.5.
+// Decide returns the policy decision and p_hat for a point without recording
+// anything (use DecideAudit for an action that is about to run, so that
+// auto-decisions are counted and audits sampled). On cold start (model not yet
+// fitted) or an unknown point it fails safe to ASK with p_hat = 0.5.
 func (g *Gateway) Decide(p featurizer.Point) (Decision, float64) {
 	if !g.model.Fitted() {
 		return Ask, 0.5
@@ -109,25 +144,36 @@ func (g *Gateway) Decide(p featurizer.Point) (Decision, float64) {
 	return decision(ph, g.tauLow, g.tauHigh), ph
 }
 
-// Observe records a human approve/deny for a point, appends it to the training
-// set and tuning history, and refits the model every RefitEvery new labels
-// (and as soon as two labels exist). Returns an error only if a refit fails.
+// Observe records a human approve/deny for an escalated (ASK) point, with
+// propensity 1: it appends the point to the training set and the tuning
+// history, and refits the model every RefitEvery new labels (and as soon as
+// two labels exist). Report the answer to a random audit with ObserveAudit
+// instead. Returns an error only if a refit fails.
 func (g *Gateway) Observe(p featurizer.Point, approved bool) error {
-	ph := 0.5
-	if g.model.Fitted() {
-		if v, ok := g.predict(p); ok {
-			ph = v
-		}
-	}
+	return g.observe(p, approved, askLabel, true)
+}
+
+// observe appends a label with the given provenance to the training set (and,
+// if hist, to the tuning history) and refits on schedule.
+func (g *Gateway) observe(p featurizer.Point, approved bool, info LabelInfo, hist bool) error {
 	label := 0
 	if approved {
 		label = 1
 	}
+	if hist {
+		ph := 0.5
+		if g.model.Fitted() {
+			if v, ok := g.predict(p); ok {
+				ph = v
+			}
+		}
+		g.pHatHist = append(g.pHatHist, ph)
+		g.labelHist = append(g.labelHist, label)
+	}
 
 	g.trainPts = append(g.trainPts, p)
 	g.trainY = append(g.trainY, label)
-	g.pHatHist = append(g.pHatHist, ph)
-	g.labelHist = append(g.labelHist, label)
+	g.trainInfo = append(g.trainInfo, info)
 	g.applyCaps()
 	g.sinceRefit++
 
@@ -140,9 +186,25 @@ func (g *Gateway) Observe(p featurizer.Point, approved bool) error {
 	return nil
 }
 
-// Tune recomputes the thresholds from the collected (p_hat, label) history. If
-// fewer than MinTuneN labels exist it returns the default band.
+// Tune recomputes the thresholds. With Config.Costs set (and valid) it
+// returns the cost-derived band unchanged and never grid-searches: the
+// thresholds are specified, not learned. Otherwise it runs TuneThresholds on
+// the collected (p_hat, label) history, and below MinTuneN labels returns the
+// default band.
+//
+// The grid search is kept for backward compatibility only. The history is
+// recorded at ASK time (Observe; audit labels are not added to it), so
+// essentially every p_hat in it lies inside the current band, where labels are
+// close to coin flips. Any pair that auto-decides enough of the history to meet
+// the coverage cap then violates the false-allow or false-block cap, no pair
+// is feasible, and the search degenerates to the default band (0.35, 0.65).
+// Tuning would need labels for auto-decided actions, which a deployment does
+// not have. Set Config.Costs instead.
 func (g *Gateway) Tune() (low, high float64) {
+	if g.cfg.costsValid() {
+		g.tauLow, g.tauHigh = g.cfg.Thresholds()
+		return g.tauLow, g.tauHigh
+	}
 	if len(g.labelHist) < g.cfg.MinTuneN {
 		g.tauLow, g.tauHigh = g.cfg.TauLow, g.cfg.TauHigh
 		return g.tauLow, g.tauHigh
@@ -176,12 +238,20 @@ func (g *Gateway) History() ([]float64, []int) {
 
 // Restore reinstates persisted state and refits the model from the training
 // points (the Cholesky factorization is reconstructed rather than serialized).
+// Every restored label is taken to be an escalation with propensity 1; call
+// RestoreAudit afterwards to reinstate audit provenance and counters. With
+// Config.Costs set, the persisted thresholds are ignored in favour of the
+// cost-derived band (costs are specified, not learned).
 func (g *Gateway) Restore(pts []featurizer.Point, y []int, pHat []float64, labels []int, low, high float64, tuned bool) error {
 	g.trainPts = append([]featurizer.Point(nil), pts...)
 	g.trainY = append([]int(nil), y...)
+	g.trainInfo = askLabels(len(pts))
 	g.pHatHist = append([]float64(nil), pHat...)
 	g.labelHist = append([]int(nil), labels...)
 	g.tauLow, g.tauHigh = low, high
+	if g.cfg.costsValid() {
+		g.tauLow, g.tauHigh = g.cfg.Thresholds()
+	}
 	g.tuned = tuned
 	g.sinceRefit = 0
 	if len(g.trainY) >= 2 {
@@ -228,6 +298,7 @@ func (g *Gateway) applyCaps() {
 		drop := len(g.trainPts) - g.cfg.MaxTrain
 		g.trainPts = append([]featurizer.Point(nil), g.trainPts[drop:]...)
 		g.trainY = append([]int(nil), g.trainY[drop:]...)
+		g.trainInfo = append([]LabelInfo(nil), g.trainInfo[drop:]...)
 	}
 	if g.cfg.MaxHist > 0 && len(g.pHatHist) > g.cfg.MaxHist {
 		drop := len(g.pHatHist) - g.cfg.MaxHist

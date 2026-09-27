@@ -20,6 +20,7 @@ import (
 	"regexp"
 
 	"github.com/changkun/trustcalib/featurizer"
+	"github.com/changkun/trustcalib/featurizer/trustcalib"
 )
 
 type rule struct {
@@ -64,17 +65,40 @@ var destructive = regexp.MustCompile(
 	`(?i)\brm\s+-[a-z]*[rf]|--force\b|--hard\b|\bdrop\s+table\b|\btruncate\b|\bdd\s|\bmkfs|>\s*/dev/|chmod\s+-R\s+777|:\(\)\s*\{|\|\s*(sh|bash)\b|\bgit\s+push\b.*-f\b`,
 )
 
+// toolFromBash returns the worst-case trustcalib tool name for a command: the
+// first (most dangerous) tool rule that matches anywhere in it, or shell_exec.
+func toolFromBash(command string) string {
+	for _, r := range toolRules {
+		if r.re.MatchString(command) {
+			return r.name
+		}
+	}
+	return defaultTool
+}
+
+// categoryOf maps each trustcalib tool name to its taxonomy category.
+var categoryOf = func() map[string]string {
+	m := make(map[string]string, len(trustcalib.Tools))
+	for _, t := range trustcalib.Tools {
+		m[t.Name] = t.Category
+	}
+	return m
+}()
+
+// CategoryFromBash returns the coarse category (read, search, vcs, exec,
+// write, db, network or deploy) of a shell command, as used by the judge
+// featurizer: the taxonomy category of the command's worst-case tool under the
+// same heuristics as PointFromBash. A command no rule recognizes is "exec"
+// (the category of the shell_exec fallback).
+func CategoryFromBash(command string) string {
+	return categoryOf[toolFromBash(command)]
+}
+
 // PointFromBash builds a trustcalib featurizer.Point from a shell command and
 // the agent's current task (session intent, supplied by the harness). The time
 // index t orders the decision stream for the kernel's recency weighting.
 func PointFromBash(command, task string, t float64) featurizer.Point {
-	tool := defaultTool
-	for _, r := range toolRules {
-		if r.re.MatchString(command) {
-			tool = r.name
-			break
-		}
-	}
+	tool := toolFromBash(command)
 	target := defaultTarget
 	for _, r := range targetRules {
 		if r.re.MatchString(command) {

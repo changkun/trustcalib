@@ -26,6 +26,24 @@ func (p KernelParams) Kernel() kernel.ProductKernel {
 	return kernel.ProductKernel{Sigma2: p.Sigma2, LTool: p.LTool, LCtx: p.LCtx, Lambda: p.Lam}
 }
 
+// AdditiveParams mirrors the "kernel" block in the additive-kernel fixtures.
+type AdditiveParams struct {
+	SStatic float64 `json:"s_static"`
+	SGlobal float64 `json:"s_global"`
+	SInter  float64 `json:"s_inter"`
+	LTool   float64 `json:"l_tool"`
+	LCtx    float64 `json:"l_ctx"`
+	Lam     float64 `json:"lam"`
+}
+
+// Kernel builds a kernel.AdditiveKernel from the fixture parameters.
+func (p AdditiveParams) Kernel() kernel.AdditiveKernel {
+	return kernel.AdditiveKernel{
+		SStatic: p.SStatic, SGlobal: p.SGlobal, SInter: p.SInter,
+		LTool: p.LTool, LCtx: p.LCtx, Lambda: p.Lam,
+	}
+}
+
 // PackedJSON mirrors a packed feature block in the fixtures.
 type PackedJSON struct {
 	PhiTool [][]float64 `json:"phi_tool"`

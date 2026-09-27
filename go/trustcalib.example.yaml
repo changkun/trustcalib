@@ -1,11 +1,33 @@
 # trustcalib hyperparameters. Every key is optional; omitted keys fall back to
 # these manuscript defaults. Pass with: trustcalib-hook --config <this file>.
 
+# Which featurizer maps a hook request to kernel features:
+#   taxonomy  the bundled tool/target/task taxonomy (featurizer/trustcalib)
+#   judge     an LLM judge's verdict or score plus a coarse command category
+#             (featurizer/judge), for shell-centric harnesses
+featurizer: taxonomy
+
 kernel:
+  # product  (v1) sigma2 * k_tool * k_ctx * k_time: forgets everything,
+  #          including static action risk, at rate 1/lambda
+  # additive (v2) s_static * k_x + s_global * k_time + s_inter * k_x * k_time:
+  #          the static action risk never decays (recommended)
+  type: product
+
+  # Product-kernel parameters (used when type: product).
   sigma2: 1.6      # signal variance (prior diagonal)
   l_tool: 1.1      # RBF lengthscale for the tool feature block
   l_ctx:  1.2      # RBF lengthscale for the context feature block
   lambda: 200.0    # time lengthscale (Ornstein-Uhlenbeck decay, in steps)
+
+  # Additive-kernel parameters (used when type: additive).
+  additive:
+    s_static: 1.6  # scale of the static action-risk component k_x (never forgets)
+    s_global: 1.0  # scale of the shared-tolerance component k_time
+    s_inter:  0.6  # scale of the local-drift component k_x * k_time
+    l_tool:   1.1  # RBF lengthscale for the tool feature block
+    l_ctx:    1.2  # RBF lengthscale for the context feature block
+    lambda:   90.0 # time lengthscale of the forgetting components (in steps)
 
 gp:
   jitter:   1.0e-6 # Tikhonov regularization added to the kernel diagonal
@@ -13,11 +35,23 @@ gp:
   tol:      1.0e-6 # convergence tolerance on the objective
 
 gateway:
-  tau_low:     0.35  # below -> BLOCK
-  tau_high:    0.65  # above -> ALLOW (between -> ASK)
+  tau_low:     0.35  # below -> BLOCK (ignored when costs are set)
+  tau_high:    0.65  # above -> ALLOW (ignored when costs are set; between -> ASK)
   refit_every: 8     # refit the model every N new labels
   safety_eps:  0.02  # false-allow cap for threshold tuning (tightened to /2)
   block_eps:   0.05  # false-block cap for threshold tuning
   max_train:   2000  # sliding-window cap on training points (0 = unbounded)
   max_hist:    2000  # sliding-window cap on tuning history (0 = unbounded)
   min_tune_n:  30    # minimum labels before tuning leaves the default band
+
+  # Cost-derived thresholds (recommended over tau_low/tau_high and `tune`).
+  # tau_low = ask / false_block, tau_high = 1 - ask / false_allow; with these
+  # costs the band is (0.25, 0.9). All three are required when set.
+  # costs:
+  #   false_allow: 10  # cost of auto-allowing an action the human would deny
+  #   false_block: 4   # cost of auto-blocking an action the human would approve
+  #   ask:         1   # cost of one escalation
+
+  audit_rate:    0     # probability of showing an auto-decision to the human anyway
+  certify_alpha: 0.01  # stats: certify the false-allow rate is below this ...
+  certify_delta: 0.05  # ... with confidence 1 - delta (needs ln(1/delta)/alpha = 300 clean audits)

@@ -19,15 +19,30 @@ type FeatureVec struct {
 }
 
 // Point is the domain-level input a Featurizer maps into a FeatureVec. The
-// bundled trustcalib featurizer interprets the fields as a named tool acting on
-// a named target resource within a task category; a custom Featurizer may
-// interpret them however it likes (or ignore them and define its own input).
+// bundled trustcalib featurizer interprets Tool, Target, Task and ArgRisk as a
+// named tool acting on a named target resource within a task category. The
+// judge featurizer (subpackage judge), for shell-centric harnesses with an
+// LLM judge in front of a general-purpose shell, reads JudgeVerdict,
+// JudgeScore and Category instead. A custom Featurizer may interpret the
+// fields however it likes (or ignore them and define its own input).
+//
+// JudgeScore is a pointer so that "no score" is distinguishable from a score
+// of 0; compare Points field by field rather than with ==.
 type Point struct {
 	Tool    string  `json:"tool"`
 	Target  string  `json:"target"`
 	Task    string  `json:"task"`
 	ArgRisk int     `json:"arg_risk"`
 	T       float64 `json:"t"`
+
+	// JudgeVerdict is the judge's verdict on the action, "allow" or "block".
+	JudgeVerdict string `json:"judge_verdict,omitempty"`
+	// JudgeScore is the judge's risk score in [0, 1] (higher = riskier), if
+	// the judge exposes one.
+	JudgeScore *float64 `json:"judge_score,omitempty"`
+	// Category is a coarse command category: read, search, vcs, exec, write,
+	// db, network, deploy or other.
+	Category string `json:"category,omitempty"`
 }
 
 // Featurizer maps a Point to a FeatureVec.

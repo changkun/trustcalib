@@ -10,6 +10,13 @@ package gateway
 //
 // The safety cap is tightened on the tuning set (safetyEps/2, floored at 1e-3)
 // to leave headroom for distribution shift.
+//
+// TuneThresholds is kept for backward compatibility; prefer cost-derived
+// thresholds (Config.Costs). It needs labels for auto-decided actions, which a
+// deployment does not have: the history the Gateway collects is recorded at
+// ASK time, so every p_hat in it lies inside the current band, no candidate
+// pair meets the caps, and the search degenerates to the default band (see
+// Gateway.Tune).
 func TuneThresholds(pHat []float64, label []int, safetyEps, blockEps float64) (low, high float64) {
 	const defaultLow, defaultHigh = 0.35, 0.65
 

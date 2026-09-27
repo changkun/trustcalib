@@ -16,6 +16,7 @@ lake build
 | Prop. 3, escalation floor | `TrustCalib/Floor.lean` | `optimal_asks_on_band`, `escalation_floor` |
 | Prop. 4, forgetting | `TrustCalib/Forgetting.lean` | `kT_shift`, `meanProd_shift`, `quadForm_shift`, `exp_decay_tendsto`, `eventually_ask`, `reentry_bound`, `reentry_prob`, `meanAdd_shift`, `meanAdd_tendsto` |
 | Prop. 5, audits | `TrustCalib/Audit.lean` | `audit_unbiased`, `one_sub_pow_le_exp`, `certify_sample_size` |
+| Props. 6-8, opaque judge (version 3) | `TrustCalib/Judge.lean` | `judge_unidentified`, `judge_marginals_not_enough`, `judgeFA_mono`, `ht_unbiased` |
 | Remark, epistemic margin | `TrustCalib/Identifiability.lean` | `lcb_iff` |
 
 ## Scope
@@ -32,6 +33,9 @@ lake build
 - Prop. 5(a) needs only `E[Aᵢ] = ε` (no independence); 5(b) is the
   deterministic inequality `(1 - α)^n ≤ exp(-α n) ≤ δ` behind the
   certification sample size.
+- Prop. 6 is proved by explicit construction on the four cells of the
+  (judge verdict, supervisor decision) table; Prop. 7 for finite populations;
+  Prop. 8 generalizes Prop. 5(a) to per-action propensities `E[Lᵢ] = πᵢ > 0`.
 
 The Python tests in `experiment/tests/` check the same statements numerically
 on the implementation (`test_chow.py`, `test_forgetting.py`, `test_audit.py`).

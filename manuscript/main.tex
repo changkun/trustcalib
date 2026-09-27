@@ -36,36 +36,31 @@
 
 \begin{abstract}
 We formalize trust calibration for agentic tool use (deciding whether an
-agent's proposed action may execute autonomously, must be escalated to a
-human, or is blocked) as Gaussian-process classification with a reject
-option, learned online from the supervisor's own approve/deny feedback. A
-latent tolerance $f(x,t)$ is observed through a probit likelihood, and the
-three-tier gateway is the Bayes-optimal one-step decision under Chow's
-reject-option loss, with thresholds $\tau_{\text{high}} = 1 - c_{\text{ask}}/c_{\text{FA}}$
-and $\tau_{\text{low}} = c_{\text{ask}}/c_{\text{FB}}$ fixed by stated costs rather than tuned.
-We prove that unary approve/deny feedback identifies the allow/deny boundary
-while pairwise (preferential) feedback cannot; that a separable time-decaying
-kernel forgets static action risk and forces every unlabelled action back
-into escalation, so the escalation rate has a floor set by the forgetting
-rate; that the irreducible escalation rate is otherwise a property of the
-supervisor; and that random audits give unbiased false-allow estimates, with
-$n \ge \ln(1/\delta)/\alpha$ clean audits certifying a false-allow rate below
-$\alpha$. The decision-theoretic and algebraic cores of all five results are
-machine-checked in Lean~4 with Mathlib. In a controlled simulation, an
-additive kernel that separates static action risk from drifting tolerance
-halves human labels per action (\resVLabels\% $\to$ \resALabels\%) and cuts
-cost-weighted regret by 59\% at an unchanged false-allow rate; it also
-reverses our earlier negative result on uncertainty-targeted querying, which
-we now trace to forgetting rather than to class imbalance. We then drop the
-fixed tool taxonomy and put the gateway on top of an opaque LLM judge, as in
-shell-centric agent harnesses: a judge's error rate for a supervisor is not
-identifiable from its verdicts, even together with the supervisor's approval
-rate; it changes when the supervisor's tolerance changes; and it is estimable
-without bias only from labels with known propensities. In a pre-registered
-simulation the calibrated gateway matches the regret of escalating the judge's
-blocks with half the human labels, but cannot repair a judge blind spot that
-its own features do not expose. The problem shares its observation model with
-preferential Bayesian optimization but is not an instance of it.
+agent's proposed action may run autonomously, must be escalated to a human,
+or is blocked) as Gaussian-process classification with a reject option,
+learned online from the supervisor's approve/deny feedback. The three-tier
+gateway is the Bayes-optimal one-step decision under Chow's reject-option
+loss, with thresholds $\tau_{\text{high}} = 1 - c_{\text{ask}}/c_{\text{FA}}$
+and $\tau_{\text{low}} = c_{\text{ask}}/c_{\text{FB}}$ set by stated costs
+rather than tuned. We prove that unary approve/deny feedback identifies the
+allow/deny boundary while pairwise (preferential) feedback cannot; that a
+separable time-decaying kernel forgets static action risk and forces every
+unlabelled action back into escalation; that the irreducible escalation rate
+is a property of the supervisor; and that random audits give unbiased
+false-allow estimates, with $n \ge \ln(1/\delta)/\alpha$ clean audits
+certifying a rate below $\alpha$. In simulation, an additive kernel that
+separates static risk from drifting tolerance halves human labels per action
+(\resVLabels\% $\to$ \resALabels\%) and cuts cost-weighted regret by
+\resRegretCut\% at an unchanged false-allow rate. We then replace the tool
+taxonomy with an opaque LLM judge, as in shell-centric agent harnesses: a
+judge's error rate for a supervisor is not identifiable from its verdicts,
+changes when the supervisor's tolerance changes, and is estimable without
+bias only from labels with known propensities. In a pre-registered
+simulation the calibrated gateway matches the regret of escalating the
+judge's blocks with half the human labels, but cannot repair a judge blind
+spot its features do not expose. The cores of all eight propositions are
+machine-checked in Lean~4 with Mathlib. The problem is related to, but not an
+instance of, preferential Bayesian optimization.
 \end{abstract}
 
 \section{Introduction and Related Work}\label{sec:intro}

@@ -1,16 +1,35 @@
-# Makefile for compiling the manuscript PDF.
-# `make` builds main.pdf (runs pdflatex/bibtex as many passes as needed via latexmk).
+# Build the manuscript PDF and the arXiv source bundle.
+#
+#   make          build main.pdf (tectonic runs TeX/BibTeX passes as needed)
+#   make arxiv    build arxiv/ (self-contained source: figures copied, .bbl
+#                 included, graphicspath rewritten), test-compile it, and
+#                 pack it as arxiv.tar.gz
+#
+# Numbers in the paper come from generated/*.tex, written by
+# `uv run python -m experiment.run` from the repository root.
 
-LATEXMK = latexmk
-MAIN    = main
+TECTONIC = tectonic
+MAIN     = main
+FIGS     = policy_evolution forgetting drift_tracking transfer query_savings calibration
 
-.PHONY: all clean
+.PHONY: all arxiv clean
 
 all: $(MAIN).pdf
 
-$(MAIN).pdf: $(MAIN).tex references.bib
-	$(LATEXMK) -pdf -bibtex -interaction=nonstopmode -halt-on-error $(MAIN).tex
+$(MAIN).pdf: $(MAIN).tex references.bib generated/*.tex
+	$(TECTONIC) -X compile $(MAIN).tex --keep-intermediates
+	rm -f $(MAIN).aux $(MAIN).log $(MAIN).out $(MAIN).blg
+
+arxiv: $(MAIN).pdf
+	rm -rf arxiv arxiv.tar.gz
+	mkdir -p arxiv/figures arxiv/generated
+	cp generated/*.tex arxiv/generated/
+	for f in $(FIGS); do cp ../experiment/figures/$$f.pdf arxiv/figures/; done
+	sed 's|\\graphicspath{{../experiment/figures/}}|\\graphicspath{{figures/}}|' $(MAIN).tex > arxiv/$(MAIN).tex
+	cp $(MAIN).bbl arxiv/$(MAIN).bbl
+	check=$$(mktemp -d) && cp -R arxiv/. $$check/ && (cd $$check && $(TECTONIC) -X compile $(MAIN).tex >/dev/null) && echo "arXiv bundle compiles" && rm -rf $$check
+	tar -czf arxiv.tar.gz -C arxiv .
 
 clean:
-	$(LATEXMK) -C
-	rm -f $(MAIN).bbl
+	rm -f $(MAIN).aux $(MAIN).log $(MAIN).out $(MAIN).blg $(MAIN).bbl
+	rm -rf arxiv arxiv.tar.gz

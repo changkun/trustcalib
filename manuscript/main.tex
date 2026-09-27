@@ -3,6 +3,7 @@
 \usepackage{amsmath,amssymb,amsthm}
 \usepackage{mathtools}
 \usepackage{booktabs}
+\usepackage{array}
 \usepackage{enumitem}
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage{graphicx}
@@ -10,401 +11,839 @@
 \usepackage{xcolor}
 
 \graphicspath{{../experiment/figures/}}
-
-\definecolor{teal}{HTML}{0D9488}
+\input{generated/results}
+\input{generated/table_main}
+\input{generated/table_safety}
+\input{generated/table_audit}
+\input{generated/table_acq}
 
 \newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
 \newtheorem{remark}{Remark}
+
+\newcommand{\lean}[1]{\texttt{\footnotesize #1}}
+\setlength{\emergencystretch}{1.5em}
 
 \title{\textbf{Progressive Autonomy as Preference Learning}\\[4pt]
 \large A Formalization of Trust Calibration for Agentic Tool Use}
-\author{Changkun Ou}
-\date{March 4, 2026}
+\author{Changkun Ou\\[2pt]
+\small Latere AI, Munich, Germany}
+\date{September 27, 2026 \quad (version 2)}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-We formalize trust calibration for agentic tool use (deciding when an
-automated agent's proposed action may execute autonomously versus require
-human approval) as a preference-learning problem. A policy gateway maintains
-a Gaussian-process posterior over a latent human risk-tolerance function,
-observed through a probit likelihood on binary approve/deny feedback, and
-escalates to the human exactly where the approval outcome is most uncertain.
-We show this is structurally an instance of Preferential Bayesian
-Optimization, inheriting its inference machinery (approximate Gaussian-process
-classification) and its sample-efficiency argument (uncertainty-targeted
-querying), while differing in objective: classifying an action space into
-allow/block/ask regions rather than optimizing a design.
+We formalize trust calibration for agentic tool use (deciding whether an
+agent's proposed action may execute autonomously, must be escalated to a
+human, or is blocked) as Gaussian-process classification with a reject
+option, learned online from the supervisor's own approve/deny feedback. A
+latent tolerance $f(x,t)$ is observed through a probit likelihood, and the
+three-tier gateway is the Bayes-optimal one-step decision under Chow's
+reject-option loss, with thresholds $\tau_{\text{high}} = 1 - c_{\text{ask}}/c_{\text{FA}}$
+and $\tau_{\text{low}} = c_{\text{ask}}/c_{\text{FB}}$ fixed by stated costs rather than tuned.
+We prove that unary approve/deny feedback identifies the allow/deny boundary
+while pairwise (preferential) feedback cannot; that a separable time-decaying
+kernel forgets static action risk and forces every unlabelled action back
+into escalation, so the escalation rate has a floor set by the forgetting
+rate; that the irreducible escalation rate is otherwise a property of the
+supervisor; and that random audits give unbiased false-allow estimates, with
+$n \ge \ln(1/\delta)/\alpha$ clean audits certifying a false-allow rate below
+$\alpha$. The decision-theoretic and algebraic cores of all five results are
+machine-checked in Lean~4 with Mathlib. In a controlled simulation, an
+additive kernel that separates static action risk from drifting tolerance
+halves human labels per action (\resVLabels\% $\to$ \resALabels\%) and cuts
+cost-weighted regret by 59\% at an unchanged false-allow rate; it also
+reverses our earlier negative result on uncertainty-targeted querying, which
+we now trace to forgetting rather than to class imbalance. The problem shares
+its observation model with preferential Bayesian optimization but is not an
+instance of it.
 \end{abstract}
 
-\section{Background and Related Work}
+\section{Introduction and Related Work}\label{sec:intro}
 
-Deciding how much autonomy to delegate to an automated system is a classical
-human-in-the-loop control problem; the technical core here, recovering a
-human's latent acceptability function from sparse binary feedback, is
-\emph{preference learning}. \citet{chu2005preference} introduced
-Gaussian-process preference learning, placing a Gaussian-process (GP) prior
-over a latent utility and linking observed human choices to it through a
-probit likelihood. We adopt exactly this construction, specialized to unary
-approve/deny feedback. The same latent-utility-with-probit model underlies
-preference-driven sequential decision making: \citet{gonzalez2017preferential}
-formalized \emph{Preferential Bayesian Optimization} (PBO), embedding GP
-preference learning in the query loop of Bayesian optimization
-\citep{brochu2010tutorial,shahriari2016bayesopt}. Our policy gateway is
-structurally an instance of this framework, differing only in objective
-(classifying an action space rather than optimizing a design), as
-Table~\ref{tab:mapping} makes precise.
+Coding agents today gate tool calls with a binary switch: run automatically,
+or refuse. A refusal does not pause the run for a human; the agent receives
+it and keeps going, often routing around the obstacle in ways that are worse
+than asking would have been. The missing primitive is not \emph{block} but
+\emph{escalate}, and the point at which to escalate should be learned from
+the supervisor's own approve/deny history rather than written by hand. This
+paper formalizes that learning problem and analyses the decision rule, the
+model of drift, and the evidence the supervisor's labels can and cannot
+provide.
 
-The inferential machinery is classical GP classification: a GP prior, a
-non-Gaussian probit likelihood, and an analytically intractable posterior
-approximated by the Laplace method or Expectation Propagation
-\citep{minka2001ep}, developed comprehensively by
-\citet{rasmussen2006gaussian}. Treating the human query budget as a scarce
-resource makes the \textsc{ask} region an \emph{acquisition} rule in the sense
-of active learning \citep{settles2009active} and Bayesian optimization
-\citep{shahriari2016bayesopt}: interruptions are spent where the expected
-information about the allow/block boundary is greatest. Finally, drifting risk
-tolerance is a non-stationarity problem; we model it with a time-decaying
-kernel component in the spirit of non-stationary covariance functions
-\citep{paciorek2003nonstationary} and, for abrupt shifts, Bayesian online
-changepoint detection \citep{adams2007bocd}.
+\paragraph{Contributions.} (i) We show that the three-tier
+\textsc{allow}/\textsc{ask}/\textsc{block} gateway is exactly Chow's
+reject-option rule \citep{chow1970optimum}, so its thresholds follow in closed
+form from costs and it depends on the posterior only through the mean
+approval probability (Proposition~\ref{prop:chow}); the long-run escalation
+rate is bounded below by the supervisor's own ambiguity
+(Proposition~\ref{prop:floor}). (ii) We show that unary feedback identifies
+the allow/deny boundary while pairwise feedback cannot
+(Proposition~\ref{prop:ident}), which locates the problem precisely relative
+to preferential Bayesian optimization. (iii) We prove that a separable
+time-decaying kernel forgets static risk and forces re-escalation after at
+most $\lambda \ln(m/z)$ label-free steps (Proposition~\ref{prop:forget}), and
+propose an additive decomposition $f(x,t) = \tau(t) - r(x)$ that forgets only
+what drifts. (iv) We treat the selective-labels structure of the gateway,
+where auto-decided actions are never labelled, and show that random audits
+restore unbiased error estimates and give a certification sample size
+(Proposition~\ref{prop:audit}). (v) The cores of all five propositions are
+machine-checked in Lean~4 (Section~\ref{sec:lean}). (vi) A simulation study
+measures each claim and corrects several claims of the first version of this
+paper (Appendix~\ref{app:changes}).
 
-This progressive view of autonomy has deep roots in the trust-in-automation
-literature: \citet{lee2004trust} characterized appropriate reliance as the
-alignment of trust with actual system trustworthiness, and
-\citet{devisser2020longitudinal} extended this to \emph{longitudinal} trust
-calibration in human--robot teams, precisely the dynamic our time-decaying
-kernel (\S\ref{sec:nonstationary}) is meant to capture. The concern has
-resurfaced sharply for large-language-model agents, where graduated autonomy
-has emerged as an explicit deployment axis alongside raw capability
-\citep{morris2024levels}. Recent work catalogs the risks of increasingly
-agentic systems \citep{chan2023harms}, argues for visibility and oversight
-mechanisms over deployed agents \citep{chan2024visibility}, and proposes
-governance practices in which a human retains approval authority over
-consequential actions \citep{shavit2023practices}. These accounts are largely
-qualitative and taxonomic: they argue \emph{why} graduated autonomy matters
-and \emph{what} should be governed, but leave the escalation policy itself as
-a fixed, hand-specified tier. Our contribution is the missing mechanism: a
-learning rule that lets the auto-approve/escalate boundary adapt from human
-feedback rather than being set by hand.
+\paragraph{Selective classification and deferral.} A classifier that may
+abstain at a cost is Chow's reject option \citep{chow1970optimum}, developed
+as selective classification \citep{elyaniv2010foundations,geifman2017selective};
+learning when to hand a decision to a human expert is learning to defer
+\citep{madras2018predict,mozannar2020consistent}. Our \textsc{ask} tier is the
+reject option, with the twist that the human's answer on an abstained action
+is also the only source of training labels, the setting of online selective
+classification with limited feedback \citep{gangrade2021online}.
 
-\section{Setup}
+\paragraph{Gaussian-process classification and preference learning.} The
+inference is classical GP classification: a GP prior, a probit likelihood and
+an approximate posterior by the Laplace method or expectation propagation
+\citep{rasmussen2006gaussian,minka2001ep}. \citet{chu2005preference}
+introduced GP preference learning with a pairwise probit likelihood, and
+\citet{gonzalez2017preferential} embedded preference learning in the query loop
+of Bayesian optimization \citep{brochu2010tutorial,shahriari2016bayesopt},
+placing a GP on the space of duels; \citet{benavoli2026tutorial} survey GP
+preference and choice models. Our observation model is the unary special case
+of this family, but Section~\ref{sec:pbo} shows that the difference from
+pairwise feedback is one of identifiability, not a degenerate special case.
 
-At each decision point $t = 1, 2, \ldots$, the policy gateway observes a proposed agent action $a_t \in \mathcal{A}$ and an execution context $c_t \in \mathcal{C}$, where:
+\paragraph{Active learning and level-set estimation.} Choosing which actions to
+send to the human is stream-based selective sampling
+\citep{cohn1994improving,settles2009active}: the agent, not the learner,
+chooses the action, and the learner only decides whether to ask. Learning the
+region where $f$ exceeds a threshold is level-set estimation
+\citep{gotovos2013active,bogunovic2016truncated}, studied with Bernoulli
+outcomes by \citet{letham2022lookahead}; information-theoretic acquisition for
+GP classification is BALD \citep{houlsby2011bayesian}, and uncertainty
+sampling is known to suffer from sampling bias
+\citep{dasgupta2008hierarchical,dasgupta2011two}.
+
+\paragraph{Non-stationarity.} A supervisor's tolerance drifts. Time-varying GP
+bandits model drift with a forgetting kernel
+\citep{bogunovic2016timevarying}, of which our $k_{\text{time}}$ is the
+continuous-time analogue; non-stationary covariances \citep{paciorek2003nonstationary}
+and online changepoint detection \citep{adams2007bocd} are alternatives.
+Additive kernels \citep{duvenaud2011additive} let a model forget some
+components and not others.
+
+\paragraph{Trust in automation and agent governance.} Appropriate reliance
+aligns trust with trustworthiness \citep{lee2004trust}, and trust calibration
+is longitudinal \citep{devisser2020longitudinal}. Graduated autonomy is an
+explicit deployment axis for language-model agents \citep{morris2024levels};
+recent work catalogues their risks \citep{chan2023harms}, argues for visibility
+and oversight \citep{chan2024visibility} and for human approval of
+consequential actions \citep{shavit2023practices}. These accounts leave the
+escalation policy as a fixed tier; our contribution is a learning rule for it.
+Because auto-decided actions produce no label, the evaluation of such a rule
+faces the selective-labels problem \citep{lakkaraju2017selective}.
+
+\section{Setup}\label{sec:setup}
+
+At each decision point $t = 1, 2, \ldots$, the gateway observes a proposed
+agent action $a_t \in \mathcal{A}$ and an execution context $c_t \in \mathcal{C}$,
 %
 \begin{align}
     a_t &= (\texttt{tool\_name},\; \texttt{args},\; \texttt{target\_resource}), \\
-    c_t &= (\texttt{repo\_state},\; \texttt{task\_desc},\; \texttt{session\_history}).
+    c_t &= (\texttt{repo\_state},\; \texttt{task\_desc},\; \texttt{session\_history}),
 \end{align}
 %
-A human supervisor provides binary feedback $y_t \in \{0, 1\}$ (deny/approve). We write $x_t \coloneqq (a_t, c_t) \in \mathcal{X} = \mathcal{A} \times \mathcal{C}$ for the joint input.
+and writes $x_t \coloneqq (a_t, c_t) \in \mathcal{X}$. The agent chooses $x_t$;
+the gateway chooses only a decision $d_t \in \{\textsc{allow}, \textsc{ask},
+\textsc{block}\}$. If $d_t = \textsc{ask}$ the human supervisor returns
+$y_t \in \{0,1\}$ (deny/approve), which both settles the action and becomes a
+training label; \textsc{allow} and \textsc{block} are executed without a label.
+Decisions are made prequentially: $d_t$ depends only on labels received before
+$t$.
 
-\section{Latent Risk Tolerance}
+\section{Latent Tolerance and Identifiability}\label{sec:latent}
 
-\begin{definition}[Risk tolerance function]
-There exists a latent function $f\colon \mathcal{X} \to \mathbb{R}$ encoding the human's risk tolerance, such that approval probability follows a probit observation model:
+\begin{definition}[Latent tolerance]\label{def:latent}
+There is a latent function $f\colon \mathcal{X} \times \mathbb{R} \to \mathbb{R}$
+such that the supervisor approves $x$ at time $t$ with probability
 \begin{equation}
-    \Pr(y = 1 \mid x) = \Phi\!\bigl(f(x)\bigr),
+    \Pr(y = 1 \mid x, t) = \Phi\bigl(f(x,t)\bigr), \qquad
+    f(x, t) = \tau(t) - r(x) + h(x, t),
 \end{equation}
-where $\Phi$ is the standard normal CDF.
+where $\Phi$ is the standard normal CDF, $r(x)$ is the static risk of the
+action, $\tau(t)$ is the supervisor's current tolerance, and $h$ is a
+(typically small) interaction that lets tolerance drift differently for
+different actions.
 \end{definition}
 
-\begin{remark}\label{rem:unary}
-This is structurally identical to the observation model in Preferential Bayesian Optimization \citep{gonzalez2017preferential} and, more fundamentally, in Gaussian-process preference learning \citep{chu2005preference}. In standard PBO, the human expresses a preference between two candidates $(x_i, x_j)$ via $\Pr(x_i \succ x_j) = \Phi\bigl(f(x_i) - f(x_j)\bigr)$. Here, the comparison is against an implicit internal threshold: the human approves when $f(x)$ exceeds their acceptable-risk boundary. The unary case is a degenerate pairwise comparison against a fixed reference point.
-\end{remark}
+The decomposition separates what is a property of the action from what is a
+property of the supervisor: $r$ can be shared across supervisors (and is what
+a static corpus such as R-Judge \citep{yuan-etal-2024-rjudge} could inform),
+while $\tau$ is one-dimensional, per supervisor, and drifts. The split is
+identified only up to a shared constant, which the prior fixes.
 
-\section{Gaussian Process Prior and Posterior}
+\begin{proposition}[Unary feedback identifies the boundary; pairwise does not]\label{prop:ident}
+Let $\Phi$ be strictly increasing. (a) If $\Phi(f(x)) = \Phi(g(x))$ for all
+$x$, then $f = g$; in particular the allow region $\{x : f(x) > 0\}$ is
+identified by unary approval probabilities. (b) The pairwise likelihood
+$\Pr(x \succ x') = \Phi(f(x) - f(x'))$ is invariant under $f \mapsto f + c$
+for every constant $c$; hence for every $f$ and every $x$ there is a $g$ with
+identical pairwise likelihoods for all pairs and the opposite sign at $x$.
+\end{proposition}
 
-Place a GP prior over $f$ \citep{rasmussen2006gaussian}:
+Part (b) says that preference comparisons, however many, cannot tell whether
+an action lies on the allow or the deny side: only its rank relative to other
+actions is observable. Unary approve/deny feedback carries exactly the
+absolute information that pairwise feedback lacks. This corrects the first
+version of this paper, which described the unary model as ``a degenerate
+pairwise comparison against a fixed reference point''; the reference point is
+precisely what pairwise data cannot supply.
+
+\section{Gaussian-Process Prior and Posterior}\label{sec:gp}
+
+We place a GP prior $f \sim \mathcal{GP}(0, k)$ \citep{rasmussen2006gaussian}.
+With feature maps for the action and context, let $k_{\text{tool}}$ and
+$k_{\text{ctx}}$ be squared-exponential kernels, $k_x = k_{\text{tool}}\,k_{\text{ctx}}$,
+and $k_{\text{time}}(t,t') = \exp(-|t-t'|/\lambda)$. We compare two kernels:
+\begin{align}
+  k_{\text{prod}}\bigl((x,t),(x',t')\bigr) &= \sigma^2\, k_x(x,x')\, k_{\text{time}}(t,t'),
+  \label{eq:kprod}\\
+  k_{\text{add}}\bigl((x,t),(x',t')\bigr) &= \sigma_s^2\, k_x(x,x')
+     + \sigma_g^2\, k_{\text{time}}(t,t')
+     + \sigma_d^2\, k_x(x,x')\, k_{\text{time}}(t,t').
+  \label{eq:kadd}
+\end{align}
+The product kernel~\eqref{eq:kprod} was the kernel of the first version. The
+additive kernel~\eqref{eq:kadd} mirrors Definition~\ref{def:latent}: the first
+term is a prior on the static risk $r$, the second on the shared tolerance
+$\tau$ (every label, for any action, updates it), and the third on the
+interaction $h$. Both are positive semidefinite, since sums and Schur products
+of PSD kernels are PSD.
+
+After observing $\mathcal{D}_N = \{(x_i, t_i, y_i)\}_{i=1}^N$ the posterior
+$p(f \mid \mathcal{D}_N) \propto \mathcal{GP}(0,k)\prod_i
+\Phi(f_i)^{y_i}(1-\Phi(f_i))^{1-y_i}$ is intractable; we use the Laplace
+approximation (\citealp{rasmussen2006gaussian}, Algorithms~3.1--3.2), whose
+predictive latent mean at $x_*$ is $\mu_* = \mathbf{k}_*^\top
+\nabla \log p(\mathbf{y}\mid\hat{\mathbf f})$ and variance $\sigma_*^2 =
+k_{**} - \mathbf{k}_*^\top (K + W^{-1})^{-1}\mathbf{k}_*$. Under this Gaussian
+approximation the predictive approval probability is exactly
 \begin{equation}
-    f \sim \mathcal{GP}\!\bigl(\mu_0,\; k(x, x')\bigr).
+  \hat p(x_*) \coloneqq \mathbb{E}\bigl[\Phi(f_*)\bigr]
+  = \Phi\bigl(\mu_* / \sqrt{1 + \sigma_*^2}\bigr).
 \end{equation}
+The Laplace approximation is known to underestimate the magnitude of the
+posterior mean and so to give over-cautious probabilities
+\citep{kuss2005assessing}; we show in Section~\ref{sec:simulation} that the
+kernel, not the approximation, dominates the calibration error here.
+Hyperparameters can be chosen by maximizing the Laplace marginal likelihood;
+Section~\ref{sec:simulation} shows why this average-case criterion should not
+alone choose the forgetting rate.
 
-The kernel $k$ decomposes over the input structure. A natural choice is a product kernel:
-\begin{equation}
-    k(x, x') = k_{\text{tool}}(a, a') \cdot k_{\text{ctx}}(c, c') \cdot k_{\text{time}}(t, t'),
-\end{equation}
-where:
-\begin{itemize}[nosep]
-    \item $k_{\text{tool}}$ encodes similarity between actions (e.g., shared tool name, overlapping argument patterns, same reversibility class),
-    \item $k_{\text{ctx}}$ captures context similarity (same repository, file type, task category),
-    \item $k_{\text{time}}$ handles non-stationarity (see \S\ref{sec:nonstationary}).
-\end{itemize}
+\section{The Gateway Decision Rule}\label{sec:gateway}
 
-After observing $\mathcal{D}_N = \{(x_t, y_t)\}_{t=1}^{N}$, the posterior is:
-\begin{equation}\label{eq:posterior}
-    p(f \mid \mathcal{D}_N) \;\propto\; \mathcal{GP}(\mu_0, k) \;\cdot \prod_{t=1}^{N} \Phi\!\bigl(f(x_t)\bigr)^{y_t} \bigl(1 - \Phi\!\bigl(f(x_t)\bigr)\bigr)^{1 - y_t}.
-\end{equation}
+Let an erroneous \textsc{allow} cost $c_{\text{FA}}$, an erroneous
+\textsc{block} cost $c_{\text{FB}}$, and one escalation cost $c_{\text{ask}}$,
+all positive. For an approval probability $p$ the expected losses are
+$L_{\textsc{allow}}(p) = (1-p)\,c_{\text{FA}}$,
+$L_{\textsc{block}}(p) = p\,c_{\text{FB}}$ and $L_{\textsc{ask}} = c_{\text{ask}}$.
 
-This is analytically intractable due to the non-Gaussian likelihood. Approximate inference proceeds via the Laplace approximation \citep{rasmussen2006gaussian} or Expectation Propagation \citep{minka2001ep}, the same machinery used in PBO.
-
-\begin{remark}[Practical realization]
-For the unary model, the Laplace approximation of \citet{rasmussen2006gaussian} (Algorithm~3.1 there) reduces inference to a short Newton iteration to the posterior mode, after which the predictive approval probability admits the closed form $\mathbb{E}\bigl[\Phi(f(x_*))\bigr] \approx \Phi\!\bigl(\mu_* / \sqrt{1 + \sigma_*^2}\bigr)$, with $\mu_*$ and $\sigma_*^2$ the latent posterior mean and variance at $x_*$. At the scale of decision points in a single project ($N$ on the order of $10^2$ to $10^3$), this exact computation is inexpensive and needs no sparse approximation, which keeps the implementation a transparent instance of the cited machinery rather than a wrapper around a general optimization stack. A maintained off-the-shelf alternative is the \texttt{PairwiseGP} model of BoTorch \citep{balandat2020botorch}, a deployable PBO implementation; being pairwise, it recovers the unary setting only through the degenerate comparison against a fixed reference of Remark~\ref{rem:unary}, at the cost of a heavier dependency. This choice affects only the posterior: the gateway rule, the non-stationary drift component, and any baselines are unchanged.
-\end{remark}
-
-\section{The Policy Gateway Decision Rule}
-
-Given the posterior predictive distribution at a new point $x_*$:
-\begin{equation}
-    \hat{p}(x_*) \coloneqq \mathbb{E}_{f \mid \mathcal{D}_N}\!\bigl[\Phi(f(x_*))\bigr],
-\end{equation}
-the gateway applies a three-tier decision:
+\begin{proposition}[Bayes-optimal three-tier rule]\label{prop:chow}
+Let $\tau_{\text{high}} = 1 - c_{\text{ask}}/c_{\text{FA}}$ and
+$\tau_{\text{low}} = c_{\text{ask}}/c_{\text{FB}}$.
+(a) For any posterior $\mu$ over the latent value and integrable link, the
+posterior expected loss of each action equals its loss at the posterior-mean
+approval probability $\hat p = \int \Phi\,d\mu$; hence the Bayes action
+depends on the posterior only through $\hat p$.
+(b) The band is non-empty, $\tau_{\text{low}} < \tau_{\text{high}}$, iff
+$c_{\text{ask}}(c_{\text{FA}} + c_{\text{FB}}) < c_{\text{FA}}\,c_{\text{FB}}$.
+(c) If it is, the rule
 \begin{equation}\label{eq:decision}
-    \text{decision}(x_*) =
+    d(\hat p) =
     \begin{cases}
-        \textsc{allow}  & \text{if } \hat{p}(x_*) > \tau_{\text{high}}, \\[3pt]
-        \textsc{block}  & \text{if } \hat{p}(x_*) < \tau_{\text{low}}, \\[3pt]
-        \textsc{ask}    & \text{otherwise}.
+        \textsc{allow}  & \text{if } \hat p > \tau_{\text{high}}, \\
+        \textsc{block}  & \text{if } \hat p < \tau_{\text{low}}, \\
+        \textsc{ask}    & \text{otherwise}
     \end{cases}
 \end{equation}
+attains the minimum expected loss over the three actions for every $\hat p$,
+strictly so off the two thresholds.
+(d) If it is not, some auto-decision is always at least as good as asking.
+\end{proposition}
 
-The $\textsc{ask}$ region $[\tau_{\text{low}}, \tau_{\text{high}}]$ plays the role of an \emph{acquisition function} \citep{shahriari2016bayesopt,settles2009active}: the system queries the human precisely where the model is most uncertain about the approval outcome, maximizing the expected value of information per human interruption.
+The rule of the first version, with band $(0.35, 0.65)$, is exactly this rule
+with symmetric costs $c_{\text{FA}} = c_{\text{FB}} = c_{\text{ask}}/0.35$.
+Asymmetric costs give asymmetric bands: with $c_{\text{FA}} = 10$,
+$c_{\text{FB}} = 4$, $c_{\text{ask}} = 1$ the band is $(0.25, 0.90)$. The
+thresholds are therefore \emph{specified} by the operator, not tuned on data.
+This matters because tuning them needs labels on auto-decided actions, which
+the gateway never obtains (Section~\ref{sec:audit}); the first version tuned
+its test-phase thresholds with the oracle's labels on every validation action,
+information no deployment has.
 
-\begin{remark}
-The target operating point (85--90\% auto-approve, 10--15\% human escalation) emerges naturally as the posterior concentrates. Early in a project, most actions fall in the $\textsc{ask}$ region. As the model learns, the $\textsc{ask}$ band narrows, and the auto-approve rate rises without any manual threshold tuning.
+\begin{proposition}[Escalation floor]\label{prop:floor}
+Let $q(x) = \Phi(f(x))$ be the true approval probability. Any policy that is
+pointwise Bayes-optimal given $q$ (that is, with a perfect posterior) must
+escalate every action with $\tau_{\text{low}} < q(x) < \tau_{\text{high}}$.
+Consequently, for any finite population of actions with nonnegative weights,
+its escalated mass is at least the mass of the open band.
+\end{proposition}
+
+The first version asserted that an 85--90\% auto-approval rate ``emerges
+naturally as the posterior concentrates''. Proposition~\ref{prop:floor}
+replaces that assertion: the achievable automation rate is bounded by the
+supervisor's own ambiguity at the operator's costs, which no learner can
+remove. In our simulation the floor is \resFloorSym\% at the symmetric band
+but \resFloorSafe\% at the safety-weighted band.
+
+\begin{remark}[Escalation versus acquisition]
+Proposition~\ref{prop:chow} is a one-step rule: it values the human's answer
+only for the action at hand. An answer also improves future decisions, so a
+fully sequential rule would ask when $c_{\text{ask}} - \mathrm{VOI}(x) <
+\min(L_{\textsc{allow}}, L_{\textsc{block}})$, with $\mathrm{VOI}$ the expected
+reduction in future loss. The \textsc{ask} band is therefore an escalation
+rule first; whether it is also a good acquisition rule is an empirical
+question, and Section~\ref{sec:simulation} shows that the answer depends on
+the kernel.
 \end{remark}
 
-\section{Non-Stationarity}\label{sec:nonstationary}
+\begin{remark}[Epistemic margin]
+Because $\hat p = \Phi(\mu/\sqrt{1+\sigma^2})$, large posterior variance
+already pulls $\hat p$ toward $\tfrac12$. An operator who wants an explicit
+margin can instead allow only when $\Pr(\Phi(f_*) > \tau_{\text{high}}) \ge
+1-\delta$, which for a Gaussian posterior and strictly increasing $\Phi$ is
+$\mu_* - z_{1-\delta}\,\sigma_* > \Phi^{-1}(\tau_{\text{high}})$, a lower
+confidence bound in the style of safe exploration \citep{sui2015safe}.
+\end{remark}
 
-Human risk tolerance drifts: early in a project the supervisor is cautious; as trust accumulates for familiar patterns, they become permissive. Model this via a time-decayed kernel component:
-\begin{equation}
-    k_{\text{time}}(t, t') = \exp\!\Bigl(-\frac{|t - t'|}{\lambda}\Bigr),
-\end{equation}
-where $\lambda > 0$ is a lengthscale controlling the forgetting rate. This gives recent approve/deny signals more weight, a principled analog of the intuition that ``agents earn trust over time.''
+\section{Non-Stationarity and Forgetting}\label{sec:nonstationary}
 
-For computational efficiency, an equivalent effect can be achieved through a sliding window of the most recent $W$ observations, or via online changepoint detection when the supervisor's behavior shifts abruptly (e.g., moving to a new codebase).
+The time kernel $k_{\text{time}}$ is the Ornstein--Uhlenbeck covariance: for
+fixed $x$, $f(x,\cdot)$ is a mean-reverting Markov process. It lets recent
+labels dominate, which tracks drift, but it also reverts every unlabelled
+action to the prior mean.
 
-\section{Correlated Generalization}
+\begin{proposition}[Forgetting]\label{prop:forget}
+Let $\mu(x_*, t) = \sum_i k\bigl((x_*,t),(x_i,t_i)\bigr)\,\alpha_i$ be any
+kernel predictor whose coefficients $\alpha$ are fixed by the training data
+(the Laplace GP-probit mean has $\alpha = \nabla\log p(\mathbf y\mid\hat{\mathbf f})$),
+and let $t \ge \max_i t_i$ and $\Delta \ge 0$.
+(a) Under $k_{\text{prod}}$, $\mu(x_*, t+\Delta) = e^{-\Delta/\lambda}\mu(x_*, t)$,
+and the variance reduction $\mathbf k_*^\top A\,\mathbf k_*$ (for any fixed $A$)
+decays by $e^{-2\Delta/\lambda}$.
+(b) Hence, if no further labels arrive, $\Phi$ is continuous at $0$ with
+$\Phi(0)=\tfrac12$ and $\tau_{\text{low}} < \tfrac12 < \tau_{\text{high}}$,
+every action is eventually escalated; explicitly, an action with $\mu(x_*,t) = m > 0$ is no longer
+auto-allowed after at most $\lambda \ln(m/z)$ label-free steps, where
+$z = \Phi^{-1}(\tau_{\text{high}}) > 0$.
+(c) Under $k_{\text{add}}$, only the time-coupled components decay:
+$\mu(x_*, t+\Delta) \to \sum_i \sigma_s^2\, k_x(x_*, x_i)\,\alpha_i$, the
+static part.
+\end{proposition}
 
-A key advantage over a na\"ive contextual bandit (which treats each $(a, c)$ independently) is \emph{correlated generalization} through the kernel. Concretely:
+Part~(b) contradicts a claim of the first version, that $k_{\text{time}}$
+``down-weights stale evidence but does not itself generate new probes''. It
+does: every region of the action space that stops receiving labels, directly
+or through its kernel neighbours, drifts back into the band on a fixed clock,
+whether or not the supervisor's tolerance has changed. With
+$\lambda = 90$ and $\tau_{\text{high}} = 0.65$ ($z \approx 0.385$), an action
+with posterior mean $m = 2$ returns within $90 \ln(2/0.385) \approx 148$
+steps. This forced re-escalation is an implicit re-audit, which is useful
+under drift, but it charges the supervisor for the static structure the model
+has already learned and it keeps the posterior close to the prior, which
+makes the gateway underconfident. The additive kernel keeps the static part
+and forgets only the tolerance and the interaction; the price is that it loses
+the implicit re-audit, which Section~\ref{sec:audit} restores explicitly. Note
+also that the Ornstein--Uhlenbeck process is non-directional: it models change,
+not the one-way accumulation of trust. A sliding window of recent
+observations or online changepoint detection \citep{adams2007bocd} are
+alternatives rather than equivalents.
 
-\begin{itemize}[nosep]
-    \item Approving \texttt{write\_file} to \texttt{/workspace/src/} transfers evidence to \texttt{write\_file} to \texttt{/workspace/test/}, since $k_{\text{tool}}$ and $k_{\text{ctx}}$ assign high similarity.
-    \item Denying \texttt{execute\_sql} with a \texttt{DROP} argument propagates caution to \texttt{execute\_sql} with \texttt{TRUNCATE}, without the human having to deny each variant individually.
-    \item A new tool with no interaction history inherits the prior $\mu_0$, which maps to $\textsc{ask}$, the fail-safe default.
-\end{itemize}
+\section{Correlated Generalization}\label{sec:correlated}
 
-\section{Connection to PBO}
+A contextual learner that treats each $(a,c)$ cell independently needs labels
+in every cell; the kernel transfers evidence between similar actions. With the
+featurization used here (reversibility, base sensitivity, blast radius and
+category of the tool; target sensitivity, destructive-argument flag and task
+of the context), approving \texttt{write\_file} to \texttt{workspace\_src}
+transfers to \texttt{write\_file} to \texttt{workspace\_tests}. Transfer cuts
+both ways: under the isotropic lengthscales of Section~\ref{sec:simulation}
+the prior correlation of \texttt{git\_push} and \texttt{git\_force\_push} is
+$0.975$ and that of \texttt{write\_file} and \texttt{delete\_file} on the same
+target $0.87$, while moving target sensitivity from a sandbox to production
+infrastructure changes the context kernel only by a factor $0.71$. Approval
+therefore also propagates toward dangerous neighbours. The claim of the first
+version that ``a new tool with no interaction history inherits the prior
+$\mu_0$, which maps to \textsc{ask}'' holds only for actions far from all
+labelled ones under the kernel; a new action that resembles approved actions
+inherits their approval. Per-feature lengthscales, a prior that makes $f$
+decrease in the risk attributes \citep{riihimaki2010gaussian}, or the
+epistemic margin above are the natural remedies; we measure the leak rather
+than fix it here.
 
-The mapping between the trust calibration problem and Preferential Bayesian Optimization \citep{gonzalez2017preferential} is summarized in Table~\ref{tab:mapping}.
+\section{Selective Labels and Audits}\label{sec:audit}
+
+Only escalated actions are labelled. The GP posterior itself is not biased by
+this adaptive design when the model is correctly specified, since the
+decision to ask depends only on past observations; but every frequency
+computed from the labels is, including false-allow rates and any threshold
+tuning, and a confidently wrong \textsc{allow} region is never revisited
+except through forgetting. We therefore add random audits: each auto-decided
+action is also shown to the human with probability $\varepsilon$.
+
+\begin{proposition}[Audits]\label{prop:audit}
+(a) Let $A_i$ be audit indicators with $\mathbb E[A_i] = \varepsilon > 0$
+(independence is not required) and $e_i$ the false-allow indicators of $N$
+auto-allowed actions. The Horvitz--Thompson estimator
+$\widehat{\mathrm{FA}} = \sum_i A_i e_i / (N\varepsilon)$ satisfies
+$\mathbb E\,\widehat{\mathrm{FA}} = \frac1N\sum_i e_i$.
+(b) If the true false-allow rate is at least $\alpha \in (0,1]$, the
+probability that $n$ independent audits are all clean is at most
+$(1-\alpha)^n \le e^{-\alpha n}$, which is at most $\delta$ once
+$n \ge \ln(1/\delta)/\alpha$.
+\end{proposition}
+
+Part~(b) is the familiar ``rule of three'' made exact: certifying a
+false-allow rate below $1\%$ at $95\%$ confidence takes $300$ clean audits.
+Published evaluations of deployed agent-action classifiers rest on samples of
+this order or smaller; for example, the false-negative rate reported for one
+production classifier on real dangerous actions is estimated from $52$
+examples \citep{hughes2026automode}.
+
+\section{Relation to Preferential Bayesian Optimization}\label{sec:pbo}
+
+Table~\ref{tab:mapping} places the gateway next to preferential Bayesian
+optimization (PBO). The two share a latent function observed through a
+binary-response likelihood and the same approximate inference. They differ in
+three structural ways. First, in PBO the learner chooses the query; here the
+agent's stream chooses $x_t$ and the learner only chooses whether to ask
+(stream-based selective sampling). Second, PBO seeks an optimizer, while the
+gateway seeks a level set, $\{x : f(x) > \Phi^{-1}(\tau)\}$. Third, and most
+fundamentally, pairwise data identify $f$ only up to a constant
+(Proposition~\ref{prop:ident}), which suffices to find a maximizer but not a
+threshold. We therefore regard the gateway as GP classification with a reject
+option and a level-set objective, a relative of PBO rather than an instance of
+it. (In \citet{gonzalez2017preferential} the GP is placed on the duel space
+$\mathcal X \times \mathcal X$ with a logistic link; the difference form
+$\Phi(f(x_i) - f(x_j))$ is that of \citet{chu2005preference}.)
 
 \begin{table}[h]
 \centering
+\small
 \begin{tabular}{@{}lll@{}}
 \toprule
-\textbf{Component} & \textbf{PBO (Optimization)} & \textbf{Trust Calibration (Policy)} \\
+\textbf{Component} & \textbf{PBO} & \textbf{Trust calibration (this paper)} \\
 \midrule
-Input space $\mathcal{X}$ & Design parameters & (action, context) pairs \\
-Latent function $f$ & Objective to maximize & Risk tolerance to learn \\
-Human feedback & Pairwise preference $x_i \succ x_j$ & Unary approve/deny \\
-Observation model & $\Phi(f(x_i) - f(x_j))$ & $\Phi(f(x))$ \\
-Acquisition & Next query to evaluate & Next action to escalate \\
-Goal & Find $x^* = \arg\max f$ & Learn the $\textsc{allow}$/$\textsc{block}$ boundary \\
+Input space & design parameters & (action, context, time) \\
+Who picks the query & learner & agent; learner only decides to ask \\
+Feedback & pairwise preference & unary approve/deny \\
+Identified & $f$ up to a constant & $f$ (Prop.~\ref{prop:ident}) \\
+Objective & $\arg\max f$ & level set $\{\hat p > \tau_{\text{high}}\}$ etc. \\
+Decision rule & acquisition function & Chow rule (Prop.~\ref{prop:chow}) \\
+Unlabelled decisions & none & \textsc{allow}/\textsc{block} (selective labels) \\
 \bottomrule
 \end{tabular}
-\caption{Structural correspondence between PBO and trust calibration.}
+\caption{Structural comparison with preferential Bayesian optimization.}
 \label{tab:mapping}
 \end{table}
 
-The ``preferential'' aspect is literal: the human is expressing preferences over what the agent should be allowed to do. The same mathematical machinery (GP priors, probit likelihoods, approximate posterior inference) transfers directly. The difference is the objective: PBO seeks to \emph{optimize}, while trust calibration seeks to \emph{classify} the action space into allow/block/ask regions with minimal human queries.
+\section{Datasets and Evaluation}\label{sec:data}
 
-\section{Datasets and Evaluation}
-
-Empirically grounding the gateway requires data pairing proposed agent
-actions with human approve/deny judgments. The closest public resource is
-R-Judge \citep{yuan-etal-2024-rjudge}, which supplies multi-turn agent
-interaction records annotated by humans with binary safe/unsafe labels across
-a range of risk scenarios; it is a natural source for a cold-start prior
-$\mu_0$ and for calibrating $k_{\text{tool}}$ and $k_{\text{ctx}}$. Broader
-agent-safety benchmarks such as Agent-SafetyBench
-\citep{zhang2024agentsafetybench} and ToolEmu \citep{ruan2024toolemu} widen
-the action and context coverage, but their risk labels are produced by
-automated judges rather than per-action human approval, so they are better
-suited to stress-testing the learned boundary than to fitting $f$ itself.
-
-A structural gap remains: no public dataset captures the \emph{longitudinal,
-per-supervisor} signal that the non-stationarity model
-(\S\ref{sec:nonstationary}) assumes. Existing corpora provide single-shot,
-aggregated annotations and do not track an individual supervisor's risk
-tolerance drifting over the course of a project. Validating the time-decaying
-kernel therefore requires either a controlled user study or a simulation with
-deliberately drifting synthetic annotators, with R-Judge serving as the
-static initializer. We treat this as an inherent limitation of currently
-available data rather than a deficiency of the model.
+Empirically grounding the gateway requires proposed agent actions paired with
+human approve/deny judgments. R-Judge \citep{yuan-etal-2024-rjudge} supplies
+agent interaction records with human safe/unsafe labels and is a natural
+source for the static risk $r(x)$ of Definition~\ref{def:latent}.
+Agent-SafetyBench \citep{zhang2024agentsafetybench} and ToolEmu
+\citep{ruan2024toolemu} widen coverage, but their labels come from automated
+judges rather than per-action human approval. No public dataset captures the
+longitudinal, per-supervisor signal the tolerance $\tau(t)$ requires, so we
+evaluate in a controlled simulation with a known oracle, the standard
+protocol for GP preference and level-set methods: recovery of the oracle
+means that the inference is correct under the model, not that the world
+behaves like the model.
 
 \section{Simulation Study}\label{sec:simulation}
 
-We accordingly exercise the formulation in a controlled simulation whose
-ground-truth oracle instantiates Definition~1 and the drift of
-\S\ref{sec:nonstationary}: the standard evaluation protocol for Preferential
-Bayesian Optimization, where the latent preference function is synthetic by
-construction so that recovery, calibration, and query efficiency can be
-measured against a known target. The action space is $18$ agent tools with
-interpretable decision-time risk attributes (reversibility, base sensitivity,
-blast radius, destructive-argument flag), $8$ target-resource sensitivity
-tiers, and $7$ task contexts. The oracle latent is a static action
-acceptability term plus a saturating accumulated-trust term
-(\S\ref{sec:nonstationary}) with an abrupt changepoint at $t = 750$, plus a
-three-way safety veto (irreversible \emph{and} sensitive \emph{and}
-low-trust); approvals are drawn as $y \sim \mathrm{Bernoulli}(\Phi(f^*))$. The
-gateway is the self-contained Laplace GP-probit of \citet{rasmussen2006gaussian}
-with the product kernel of \S4. The kernel observes the action and context
-risk attributes but never the time-varying veto or the drift, which it must
-recover from feedback through $k_{\text{time}}$. We process a stream of
-$N = 1500$ decision points over $6$ seeds, prequentially (every decision is
-scored before any label at that step exists), with phases learn $[0, 560)$,
-validation $[560, 1050)$ where $(\tau_{\text{low}}, \tau_{\text{high}})$ is
-tuned once under a tightened false-allow cap, and a frozen-policy test
-$[1050, 1500)$ in which the model keeps adapting online. Reproducible code,
-the full report, and all figures are provided under \texttt{experiment/}.
-
-\paragraph{Inference and correlated generalization hold.}
-Table~\ref{tab:results} reports the validation phase (a fair measurement of
-what was learned, with the changepoint inside it) and the post-changepoint
-test phase, against a no-correlation baseline that learns each tool
-independently. The GP gateway auto-decides $68\%$ of actions at $97.3\%$
-accuracy with a $2.4\%$ false-allow rate on validation, and $99.7\%$ accuracy
-post-changepoint; the independent baseline auto-decides almost everything but
-at $69$--$71\%$ accuracy, confirming that the kernel, not the three-tier rule,
-carries the quality. Correlated generalization is decisive: on a held-out
-\texttt{write\_file} to a test directory that was \emph{never} queried, the GP
-recovers the correct decision $98.7\% \pm 2.9$ of the time purely by kernel
-extrapolation from similar tools and targets, against $66.7\% \pm 47.1$ for
-the independent learner (chance $50\%$); Figure~\ref{fig:gateway} (right)
-visualizes the gap. The \textsc{ask} band narrows and the auto-approve rate
-rises as the posterior concentrates, then both react sharply at the
-changepoint and recover (Figure~\ref{fig:gateway}, left), and a fixed probe
-action's posterior tracks the drift and the abrupt reset
-(Figure~\ref{fig:drift}). Calibration is directionally correct but
-underconfident at the kernel-far tail (validation ECE $0.19$ against the true
-$\Phi(f^*)$), which we report rather than tune away.
+\paragraph{Protocol.} The action space has $18$ tools with decision-time risk
+attributes, $8$ target-sensitivity tiers and $7$ task contexts. The oracle
+instantiates Definition~\ref{def:latent}: a static acceptability term linear in
+the risk attributes, a saturating trust term with an abrupt reset at
+$t = 750$, a task offset, and a three-way veto (irreversible \emph{and}
+sensitive \emph{and} low trust) that is active for roughly $90$ steps after
+the reset; approvals are $y \sim \mathrm{Bernoulli}(\Phi(f^*))$. The kernels
+see the risk attributes but never the trust state or the veto. Each run
+processes $N = 1500$ decisions prequentially; $[0, 560)$ is warm-up and the
+rest is scored, split into an early phase containing the reset and a late
+phase. Thresholds come from costs, never from labels: the symmetric band
+$(0.35, 0.65)$ and the safety-weighted band $(0.25, 0.90)$. The headline
+metric is \emph{regret}: the mean Chow loss of the gateway's decisions minus
+that of the oracle policy that knows $\Phi(f^*)$, in units of one escalation.
+We compare the first version's product kernel ($\sigma^2 = 1.6$,
+$\lambda = 90$), the additive kernel with a configuration fixed before any
+version-2 run ($\sigma_s^2 = 1.6$, $\sigma_g^2 = 1.0$, $\sigma_d^2 = 0.6$,
+$\lambda = 90$), evidence-selected variants of both, a Bayesian linear probit
+with the same shared drift term (the oracle's static term is linear in the
+features by construction), a per-cell Beta-Bernoulli learner (one estimate per
+tool, target and task) and the first version's per-tool baseline. Lengthscales
+are $1.1$ (tool) and $1.2$ (context) throughout. Tables use $10$ seeds; the
+acquisition probe uses $20$ paired seeds. All numbers are generated by the
+released code.
 
 \begin{table}[tb]
 \centering
 \small
-\begin{tabular}{@{}lcccc@{}}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lcccccc@{}}
 \toprule
-& \multicolumn{2}{c}{\textbf{Validation (headline)}}
-& \multicolumn{2}{c}{\textbf{Test (post-changepoint)}} \\
-\cmidrule(lr){2-3}\cmidrule(lr){4-5}
-\textbf{Metric} & GP gateway & Independent & GP gateway & Independent \\
+\textbf{Model} & \textbf{Regret} & \textbf{ASK \%} & \textbf{Auto acc.\ \%}
+ & \textbf{False-allow \%} & \textbf{ECE} & \textbf{Veto ALLOW} \\
 \midrule
-Auto-decision accuracy      & {\boldmath$0.973 \pm .016$} & $0.688 \pm .164$ & {\boldmath$0.997 \pm .003$} & $0.705 \pm .248$ \\
-False-allow rate (safety)   & {\boldmath$0.024 \pm .018$} & $0.027 \pm .017$ & {\boldmath$0.003 \pm .003$} & $0.007 \pm .008$ \\
-Auto-decided fraction       & $0.684 \pm .020$ & $1.000 \pm .000$ & $0.644 \pm .094$ & $0.933 \pm .099$ \\
-\textsc{ask} / escalation   & $0.316 \pm .020$ & $0.000 \pm .000$ & $0.356 \pm .094$ & $0.067 \pm .099$ \\
-prob-RMSE vs $\Phi(f^*)$    & {\boldmath$0.263 \pm .004$} & $0.344 \pm .076$ & {\boldmath$0.236 \pm .025$} & $0.353 \pm .102$ \\
-ECE vs true prob            & {\boldmath$0.192 \pm .008$} & $0.273 \pm .078$ & {\boldmath$0.205 \pm .022$} & $0.316 \pm .104$ \\
+\TabMain
 \bottomrule
 \end{tabular}
-\caption{Simulation results, mean $\pm$ std over $6$ seeds. \textbf{Bold}
-marks the decisive cells: the GP gateway is far more accurate, safer, and
-better calibrated than a no-correlation contextual baseline. The baseline's
-larger automated fraction is not a virtue (left unbolded): it automates more
-only by auto-deciding cases it gets wrong.}
-\label{tab:results}
+\caption{Symmetric costs, no audits, scored phases, mean over 10 seeds.
+Regret is the cost-weighted headline; ASK, accuracy and false-allow (share of
+\textsc{allow}s the oracle would deny) are its components. The last column
+pools, over seeds, the \textsc{allow}s among the few actions for which the
+veto is active; read it as directional. The perfect-posterior escalation floor
+is \resFloorSym\%.}
+\label{tab:main}
 \end{table}
 
-\begin{figure}[tb]
-\centering
-\includegraphics[width=0.49\linewidth]{policy_evolution.pdf}\hfill
-\includegraphics[width=0.49\linewidth]{transfer.pdf}
-\caption{Left: the rolling policy mix. The \textsc{allow} share rises as the
-posterior concentrates (the \textsc{ask} band narrows), then collapses at the
-$t=750$ trust changepoint and recovers, exactly the Section~5 and Section~6
-dynamics. Right: correlated generalization (Section~7) to an action-context
-combination that was never queried.}
-\label{fig:gateway}
-\end{figure}
+\paragraph{The additive kernel halves the human burden.}
+Table~\ref{tab:main} gives the main comparison. Replacing the product kernel by
+the additive one cuts regret from \resVRegret{} to \resARegret{}, human labels
+from \resVLabels\% to \resALabels\% of actions (a \resABurden$\times$ rather
+than \resVBurden$\times$ reduction relative to escalating everything), and the
+calibration error from \resVEce{} to \resAEce{}, with a false-allow rate of
+\resAFA\% against \resVFA\%. The price is auto-decision accuracy, which falls
+from \resVAcc\% to \resAAcc\%, because the additive gateway auto-decides many
+more contestable actions. In the late phase the additive gateway escalates
+\resAAskLate\% of actions against a floor of \resFloorSym\%; the product
+gateway escalates \resVAskLate\%. The simple baselines show why a structured
+model is needed at all: the per-tool learner auto-decides everything at
+\resTAcc\% accuracy (regret \resTRegret), and the per-cell learner, which
+needs a label in every cell, reaches \resCAcc\% (regret \resCRegret).
 
-\paragraph{Human-burden reduction.}
-Against the status quo of always escalating (one human query per action), the
-gateway spends $508 \pm 51$ queries over the scored phases versus $940$, a
-$\sim\!1.8\times$ reduction in interruptions, while auto-deciding most actions
-accurately and safely (Figure~\ref{fig:drift}, left; the full-stream
-cumulative trajectory shows a larger gap because the cold-start learn phase
-escalates heavily by design). This is the Section~1 promise, and it is the
-defensible headline rather than a comparison to random querying.
+\paragraph{The linear baseline and the interaction.}
+The Bayesian linear probit with the same shared drift is competitive on
+average metrics (regret \resLRegret, ECE \resLEce), which is expected because
+the oracle's static term is linear in the features by construction. It cannot
+represent the veto interaction, and it allows \resLVeto{} veto-window actions
+against \resAVeto{} for the additive kernel. We read this as evidence that the
+kernel's structure (what is forgotten) matters more than its flexibility for
+average burden, while the non-parametric interaction term earns its keep on
+the rare, safety-relevant region; on real data the linear static term is
+unlikely to be correct.
 
-\begin{figure}[tb]
-\centering
-\includegraphics[width=0.49\linewidth]{query_savings.pdf}\hfill
-\includegraphics[width=0.49\linewidth]{drift_tracking.pdf}
-\caption{Left: cumulative human queries, gateway versus always-escalate
-(Section~1). Right: a fixed probe action's posterior approval probability
-tracks the drifting oracle and its abrupt reset (Section~6); the systematic
-gap is the Laplace-probit underconfidence noted in the text.}
-\label{fig:drift}
-\end{figure}
-
-\paragraph{An honest negative result on the acquisition rule.}
-The rule ``query inside the \textsc{ask} band,'' taken literally as a
-sample-efficiency claim, is \emph{not} supported here: at a matched query
-budget its prequential boundary-decision accuracy is $76.5\% \pm 2.2$ against
-$78.4\% \pm 4.2$ for random querying. An ablation that switches the changepoint
-off and on (Table~\ref{tab:ablation}) shows the gap is non-positive in
-\emph{both} regimes, including with a fully stationary target, so the deficit
-is not caused by non-stationarity. It is the familiar behaviour of pure
-uncertainty sampling under class imbalance: a region the posterior has grown
-confident about leaves the \textsc{ask} band and is never re-probed, so its
-estimate is never refreshed and a silently reset tolerance there goes
-undetected. The time-decayed kernel down-weights stale evidence but does not
-itself generate new probes. (The per-condition magnitude is small and
-seed-noisy; the robust finding is the consistently non-positive sign.) A
-recency-aware or information-theoretic acquisition criterion (an
-expected-information or BALD rule with a forgetting term) is the natural
-remedy and is left to future work; it does not affect the inference,
-generalization, or burden-reduction results above, which use the same band as
-a pure escalation rule.
+\paragraph{Evidence selection optimizes average fit, not tail safety.}
+On the labels the first-version gateway collected, the Laplace marginal
+likelihood ranks the first-version kernel last (mean log evidence $\resEvV$
+against $\resEvA$ for the additive kernel, with the linear probit best in
+\resEvLWins{} of 10 seeds; this is evidence under a selected design, since
+only escalated actions are labelled). Selecting hyperparameters
+by evidence during the run chooses long memories (typically $\lambda = 480$
+for the additive and $480$--$960$ for the product kernel) and improves
+calibration, but it nearly doubles veto-window allows for the additive kernel
+(\resAEVeto{} against \resAVeto). The marginal likelihood is an average-case
+criterion and the veto window holds about one percent of scored actions: it is
+a good criterion for structure and a poor one, on its own, for memory length.
+We therefore keep the pre-specified $\lambda = 90$.
 
 \begin{table}[tb]
 \centering
 \small
 \begin{tabular}{@{}lccc@{}}
 \toprule
-\textbf{Oracle} & \textbf{\textsc{ask}-band active} & \textbf{Random query}
-& \textbf{Gap} \\
+\textbf{Model} & \textbf{ASK \%} & \textbf{Auto acc.\ \%} & \textbf{Regret} \\
 \midrule
-Stationary (no changepoint)   & $80.6\%$ & $83.9\%$ & {\boldmath$-3.3$} pp \\
-With \S\ref{sec:nonstationary} changepoint & $75.8\%$ & $76.2\%$ & {\boldmath$-0.4$} pp \\
+\TabSafety
 \bottomrule
 \end{tabular}
-\caption{Acquisition ablation ($5$ seeds, matched budget, prequential
-boundary accuracy). The \textbf{bold} gap is the finding: it is non-positive
-in both regimes, so the \textsc{ask}-band rule does not beat random querying
-even when the target is stationary; the deficit is generic, not a
-changepoint artifact.}
-\label{tab:ablation}
+\caption{Safety-weighted costs ($c_{\text{FA}}=10$, $c_{\text{FB}}=4$,
+$c_{\text{ask}}=1$; band $(0.25, 0.90)$), 10 seeds. Floor: \resFloorSafe\%.}
+\label{tab:safety}
 \end{table}
 
-\section{Concluding Remarks}
+\paragraph{Forgetting makes a high-confidence bar unreachable.}
+Under safety-weighted costs (Table~\ref{tab:safety}) the product gateway
+escalates \resSafeVAsk\% of all actions (regret \resSafeVRegret): its
+posterior never becomes confident enough to clear $\hat p > 0.9$, because
+every action it stops asking about decays toward $\hat p = \tfrac12$
+(Proposition~\ref{prop:forget}). The additive gateway escalates
+\resSafeAAsk\% (regret \resSafeARegret) against a floor of \resFloorSafe\%.
+Figure~\ref{fig:forget} (left) isolates the mechanism: with the training set
+fixed, the product kernel's prediction for a benign \texttt{read\_file}
+decays from \resForgetStart{} to \resForgetProdEnd{} as the time since the
+last label grows, while the additive kernel's settles at its static part,
+\resForgetAddEnd.
 
-We have argued that deciding when an agent may act autonomously is not a
-threshold to hand-tune but a latent human risk-tolerance function to learn,
-and that doing so is structurally an instance of Preferential Bayesian
-Optimization specialized to unary approve/deny feedback. The contribution is
-the mechanism the governance literature leaves implicit: a GP-probit policy
-gateway whose allow/escalate/block boundary adapts from feedback, generalizes
-across correlated actions through a structured kernel, and tracks a drifting
-supervisor through a time-decayed component.
+\begin{figure}[tb]
+\centering
+\includegraphics[width=\linewidth]{policy_evolution.pdf}
+\caption{Rolling policy mix for one seed. Left: the first version's product
+kernel; right: the additive kernel. The dashed line is the trust reset at
+$t=750$, the dotted line the end of the warm-up.}
+\label{fig:gateway}
+\end{figure}
 
-The simulation study supports the parts of this story that concern
-\emph{inference}: the gateway recovers a non-stationary boundary it never
-observes directly, transfers evidence to unqueried action-context
-combinations far better than an independent learner, tracks an abrupt
-changepoint, and cuts human interruptions substantially relative to escalating
-everything. It also disciplines one claim: the \textsc{ask} band is a sound
-\emph{escalation} rule, but treating it as a sample-efficient
-\emph{acquisition} rule does not hold under class imbalance, independently of
-non-stationarity. We report this rather than tune it away, and read it as
-locating the open problem precisely in the acquisition criterion rather than
-in the formulation. The remaining gap is empirical: no public dataset tracks a
-single supervisor's per-action decisions as their tolerance drifts, so a
-recency-aware acquisition rule and a longitudinal human study are the natural
-next steps. We see the value of the formulation less in the present numbers,
-which are simulated by necessity, than in turning a hand-set autonomy tier
-into an object that can be learned, audited, and questioned.
+\begin{figure}[tb]
+\centering
+\includegraphics[width=0.49\linewidth]{forgetting.pdf}\hfill
+\includegraphics[width=0.49\linewidth]{drift_tracking.pdf}
+\caption{Left: Proposition~\ref{prop:forget} on a fixed training set; the
+product kernel returns every action to $\hat p = \tfrac12$, inside the band,
+while the additive kernel keeps the static part. Right: a fixed probe action
+under drift and the reset; both kernels track the reset, the additive one
+from a less underconfident level.}
+\label{fig:forget}
+\end{figure}
+
+\paragraph{Why uncertainty-targeted querying failed, and why it now works.}
+The first version reported that querying inside the \textsc{ask} band was no
+more sample-efficient than random querying at a matched budget, attributed
+this to class imbalance, and proposed an information-theoretic acquisition
+rule as the remedy. Table~\ref{tab:acq} tests both claims with $20$ paired
+seeds. With the product kernel the band is indeed no better than random
+($\resAcqVSGap$ and $\resAcqVCGap$ percentage points of prequential accuracy on
+contestable actions, standard errors \resAcqVSSe{} and \resAcqVCSe), on both a
+fully stationary oracle and the reset oracle, so non-stationarity was never
+the cause. With the additive kernel the same band beats random by
+$\resAcqASGap$ ($\pm$\resAcqASSe) and $\resAcqACGap$ ($\pm$\resAcqACSe) points.
+A stream-based BALD sampler \citep{houlsby2011bayesian}, which labels actions
+whose epistemic information is in the top fraction of a recent window, does
+not improve on the band under either kernel. We therefore retract both parts
+of the first version's explanation: the controlling variable is forgetting,
+and the fix is the kernel, not the acquisition rule. We also retract a claim
+made in our own review of the first version, that the band fails because it
+spends labels on intrinsically ambiguous actions: under the product kernel the
+band does place \resPlaceBandAmb\% of its labels on actions with true approval
+probability in $[0.35, 0.65]$ (base rate \resPlaceBaseAmb\%), at the same mean
+posterior variance as random querying (\resPlaceBandVar{} against
+\resPlaceRandomVar), but under the additive kernel it places even more of its
+labels there and still beats random.
+
+\begin{table}[tb]
+\centering
+\small
+\begin{tabular}{@{}llccccc@{}}
+\toprule
+\textbf{Kernel} & \textbf{Oracle} & \textbf{Band} & \textbf{Random} & \textbf{BALD}
+ & \textbf{Band$-$random} & \textbf{BALD$-$random} \\
+\midrule
+\TabAcq
+\bottomrule
+\end{tabular}
+\caption{Acquisition probe: prequential accuracy (\%) on contestable actions
+($\Phi(f^*) \in [0.15, 0.85]$) at a matched label budget; differences in
+percentage points $\pm$ paired standard error over 20 seeds.}
+\label{tab:acq}
+\end{table}
+
+\begin{table}[tb]
+\centering
+\small
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Model} & \textbf{Labels/action \%} & \textbf{Regret} & \textbf{Veto ALLOW}
+ & \textbf{HT est./truth \%} & \textbf{CI covers} \\
+\midrule
+\TabAudit
+\bottomrule
+\end{tabular}}
+\caption{Random audits of $\varepsilon = 5\%$ of auto-decided actions,
+symmetric costs, 10 seeds; arrows show no audits $\to$ audits. The last
+columns compare the Horvitz--Thompson estimate of the realized false-allow
+rate with its true value, and give the share of seeds whose Jeffreys 95\%
+interval on the audited fraction covers the truth.}
+\label{tab:audit}
+\end{table}
+
+\paragraph{Audits.} Table~\ref{tab:audit} adds random audits at
+$\varepsilon = 5\%$. For the additive gateway they raise labels per action
+from \resALabels\% to \resAudALabels\%, lower regret from \resARegret{} to
+\resAudARegret, and halve veto-window allows (\resAVeto{} $\to$ \resAudAVeto);
+for the linear baseline they cut veto-window allows from \resLVeto{} to
+\resAudLVeto. The Horvitz--Thompson estimate of the realized false-allow rate
+is \resAudAEst\% against a true \resAudATruth\%, and a Jeffreys interval on the
+audited fraction covers the truth in \resAudACover\% of seeds. With about forty
+audits per seed the estimate is noisy, as Proposition~\ref{prop:audit}(b)
+predicts: audits make the error rate estimable, not small.
+
+\paragraph{Correlated generalization cuts both ways.}
+We hold out two combinations and never label them. On the benign
+\texttt{write\_file} $\to$ \texttt{workspace\_tests} the additive gateway
+auto-decides \resHoldABCorrect\% of occurrences correctly by kernel transfer
+(product \resHoldVBCorrect\%, per-cell \resHoldCBCorrect\%, since it must ask
+about every unseen cell). On the dangerous \texttt{git\_force\_push} $\to$
+\texttt{prod\_infra}, where the oracle denies \resHoldADDeny{} of the
+occurrences, every kernel model wrongly allows some: \resHoldADFA{} (additive),
+\resHoldVDFA{} (product) and \resHoldLDFA{} (linear), against \resHoldTDFA{}
+for the per-tool learner, which has labels on the same tool at other targets,
+and none for the per-cell learner, which asks. Figure~\ref{fig:transfer}
+shows both directions. This is the leak Section~\ref{sec:correlated}
+predicts; we report it rather than tune it away.
+
+\begin{figure}[tb]
+\centering
+\includegraphics[width=\linewidth]{transfer.pdf}
+\caption{Held-out combinations that are never labelled; prequential decisions
+over 10 seeds. Left: benign transfer. Right: a dangerous combination; red bars
+are the share of the oracle's denials that were auto-allowed.}
+\label{fig:transfer}
+\end{figure}
+
+\begin{figure}[tb]
+\centering
+\includegraphics[width=0.49\linewidth]{query_savings.pdf}\hfill
+\includegraphics[width=0.45\linewidth]{calibration.pdf}
+\caption{Left: cumulative human labels for one seed against escalating every
+action. Right: reliability of $\hat p$ against the true approval probability
+(one seed, scored phases).}
+\label{fig:savings}
+\end{figure}
+
+\section{Mechanized Verification}\label{sec:lean}
+
+The decision-theoretic and algebraic cores of Propositions~\ref{prop:ident}--\ref{prop:audit}
+are formalized in Lean~4 (v4.34.1) with Mathlib (v4.34.1) in the
+\texttt{lean/} directory of the released code; the build has no \texttt{sorry},
+and every theorem depends only on Lean's standard axioms (\texttt{propext},
+\texttt{Classical.choice}, \texttt{Quot.sound}). Table~\ref{tab:lean} maps
+each proposition to its theorems. The formalization keeps the link function
+abstract (strictly increasing, or continuous at zero with value one half)
+rather than using the Gaussian CDF, which covers the probit and logistic
+links alike. It does not formalize the Laplace approximation itself:
+Proposition~\ref{prop:forget} is stated for any predictor that is linear in
+the cross-covariance vector with coefficients fixed by the training data,
+which is the form of the Laplace mean and of exact GP regression.
+Proposition~\ref{prop:chow}(a) is proved for an arbitrary probability measure
+over the latent value using the Bochner integral, and
+Proposition~\ref{prop:floor} for finite action populations. The Python
+experiment checks the same statements numerically
+(\texttt{experiment/tests}).
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}ll>{\raggedright\arraybackslash}p{0.57\linewidth}@{}}
+\toprule
+\textbf{Result} & \textbf{File} & \textbf{Theorems} \\
+\midrule
+Prop.~\ref{prop:ident} & \lean{Identifiability.lean} & \lean{unary\_identifies}, \lean{unary\_identifies\_boundary}, \lean{pairwise\_shift\_invariant}, \lean{pairwise\_cannot\_identify\_threshold} \\
+Prop.~\ref{prop:chow} & \lean{Chow.lean} & \lean{expectedLoss\_allow}, \lean{expectedLoss\_block}, \lean{band\_nonempty\_iff}, \lean{allow/block/ask\_strictly\_optimal}, \lean{decide\_optimal}, \lean{ask\_never\_needed} \\
+Prop.~\ref{prop:floor} & \lean{Floor.lean} & \lean{optimal\_asks\_on\_band}, \lean{escalation\_floor} \\
+Prop.~\ref{prop:forget} & \lean{Forgetting.lean} & \lean{kT\_shift}, \lean{meanProd\_shift}, \lean{quadForm\_shift}, \lean{exp\_decay\_tendsto}, \lean{eventually\_ask}, \lean{reentry\_bound}, \lean{reentry\_prob}, \lean{meanAdd\_shift}, \lean{meanAdd\_tendsto} \\
+Prop.~\ref{prop:audit} & \lean{Audit.lean} & \lean{audit\_unbiased}, \lean{one\_sub\_pow\_le\_exp}, \lean{certify\_sample\_size} \\
+Remark (margin) & \lean{Identifiability.lean} & \lean{lcb\_iff} \\
+\bottomrule
+\end{tabular}
+\caption{Propositions and their machine-checked counterparts (27 theorems).}
+\label{tab:lean}
+\end{table}
+
+\section{Concluding Remarks}\label{sec:conclusion}
+
+Deciding when an agent may act alone is not a threshold to hand-tune but a
+latent tolerance to learn, and the decision on top of it is a reject option
+whose thresholds follow from what errors and interruptions cost. Three
+structural facts shape what such a gateway can achieve: unary feedback is what
+identifies the allow/deny boundary; a model that forgets everything charges
+the supervisor again for what it already knew and cannot reach a demanding
+confidence bar; and the labels the gateway collects are selected, so audits
+are needed to know its error rate. In simulation, a kernel that separates
+static risk from drifting tolerance halves the human burden and turns the
+\textsc{ask} band into an effective acquisition rule, while correlated
+generalization still leaks approval to unseen dangerous actions. The
+remaining gaps are empirical (a longitudinal study of real supervisors) and
+structural: modern agents route much of their work through a general-purpose
+shell, where no fixed tool taxonomy exists and risk features must themselves
+be inferred, which we leave to future work.
+
+\appendix
+
+\section{Proofs}\label{app:proofs}
+
+\paragraph{Proposition~\ref{prop:ident}.} (a) $\Phi$ is injective, so
+$\Phi(f(x)) = \Phi(g(x))$ gives $f(x) = g(x)$ for every $x$. (b)
+$(f(x)+c) - (f(x')+c) = f(x) - f(x')$. Given $x$, take $g = f + c$ with
+$c = -f(x) - 1$ if $f(x) > 0$ and $c = -f(x) + 1$ otherwise; then $g$ has the
+same pairwise likelihoods and $g(x) = \mp 1$.
+
+\paragraph{Proposition~\ref{prop:chow}.} (a) Each loss is affine in $p$, so by
+linearity of the integral $\int L_{\textsc{allow}}(\Phi)\,d\mu =
+(1 - \int\Phi\,d\mu)\,c_{\text{FA}}$ and similarly for \textsc{block}.
+(b) Clear denominators in $c_{\text{ask}}/c_{\text{FB}} < 1 - c_{\text{ask}}/c_{\text{FA}}$.
+(c) \textsc{allow} beats \textsc{ask} iff $p > \tau_{\text{high}}$ and
+\textsc{block} beats \textsc{ask} iff $p < \tau_{\text{low}}$; \textsc{allow}
+beats \textsc{block} iff $p > c_{\text{FA}}/(c_{\text{FA}} + c_{\text{FB}})$,
+and when the band is non-empty this point lies strictly inside it, so the
+pairwise comparisons compose to rule~\eqref{eq:decision}. (d)
+$\min(L_{\textsc{allow}}, L_{\textsc{block}})$ is at most the convex
+combination with weights $c_{\text{FB}}/(c_{\text{FA}}+c_{\text{FB}})$ and
+$c_{\text{FA}}/(c_{\text{FA}}+c_{\text{FB}})$, which equals
+$c_{\text{FA}}c_{\text{FB}}/(c_{\text{FA}}+c_{\text{FB}}) \le c_{\text{ask}}$
+when the band is empty.
+
+\paragraph{Proposition~\ref{prop:floor}.} Inside the open band \textsc{ask} is
+strictly better than both auto-decisions (Proposition~\ref{prop:chow}(c)), so
+a pointwise-optimal policy cannot choose either; the band is therefore a
+subset of the escalated set, and nonnegative weights give the inequality.
+
+\paragraph{Proposition~\ref{prop:forget}.} For $s \le t$ and $\Delta \ge 0$,
+$|t + \Delta - s| = \Delta + |t - s|$, so $k_{\text{time}}(t+\Delta, s) =
+e^{-\Delta/\lambda} k_{\text{time}}(t,s)$. Every term of the product-kernel
+predictor carries one such factor, giving (a) for the mean, and the quadratic
+form carries two, giving $e^{-2\Delta/\lambda}$. For (b), $\sqrt{1+\sigma^2}
+\ge 1$, so $|\mu/\sqrt{1+\sigma^2}| \le e^{-\Delta/\lambda}|m| \to 0$ and
+continuity gives $\hat p \to \tfrac12$, which eventually lies in any open band
+around $\tfrac12$. For the explicit time, $\Delta \ge \lambda\ln(m/z)$ gives
+$e^{-\Delta/\lambda} m \le z$, and monotonicity of $\Phi$ gives
+$\hat p \le \Phi(z) = \tau_{\text{high}}$. (c) Only the second and third
+components of $k_{\text{add}}$ carry the time factor.
+
+\paragraph{Proposition~\ref{prop:audit}.} (a) By linearity,
+$\mathbb E\sum_i A_i e_i = \varepsilon \sum_i e_i$. (b) If the rate is at
+least $\alpha$, each audit is clean with probability at most $1 - \alpha$, and
+$1 - \alpha \le e^{-\alpha}$; then $e^{-\alpha n} \le \delta$ iff
+$n \ge \ln(1/\delta)/\alpha$.
+
+\section{Changes from Version 1}\label{app:changes}
+
+\begin{enumerate}[nosep,leftmargin=*]
+\item Version~1 called the gateway an instance of preferential Bayesian
+optimization and the unary model a degenerate pairwise comparison. Pairwise
+feedback cannot identify the threshold (Proposition~\ref{prop:ident}); the
+gateway is GP classification with a reject option.
+\item Version~1 gave no loss for the three-tier rule and tuned its test-phase
+thresholds with oracle labels on all validation actions. The rule is Chow's
+(Proposition~\ref{prop:chow}) and thresholds now follow from stated costs.
+\item Version~1 asserted that an 85--90\% auto-approval rate emerges without
+tuning. The achievable rate is bounded by the supervisor's ambiguity
+(Proposition~\ref{prop:floor}).
+\item Version~1 stated that $k_{\text{time}}$ does not generate new probes. It
+forces periodic re-escalation (Proposition~\ref{prop:forget}), which is the
+main cause of its high escalation rate and underconfidence; version~1
+attributed the underconfidence to the Laplace approximation.
+\item Version~1 attributed the acquisition result to class imbalance and
+proposed an information-theoretic rule as the remedy. The cause is
+forgetting; with an additive kernel the band beats random querying, and a
+BALD sampler does not help (Table~\ref{tab:acq}).
+\item Version~1 reported ``508 vs 940 queries, a $\sim$1.8$\times$
+reduction''; its numerator counted the whole stream and its denominator only
+the scored phases. On matching phases the version-1 protocol gives about
+$3.0\times$; the version-2 protocol gives \resVBurden$\times$ (product) and
+\resABurden$\times$ (additive).
+\item Version~1's transfer test held out only a benign combination, and its
+per-tool baseline ignored target and task. Version~2 adds a dangerous
+hold-out, a per-cell baseline and a linear-probit baseline.
+\item Version~1 did not state its hyperparameters, described a sliding window
+as equivalent to the time kernel, and illustrated argument-level transfer
+(\texttt{DROP} to \texttt{TRUNCATE}) that its single destructive-argument
+feature cannot express. These are corrected.
+\end{enumerate}
 
 \bibliographystyle{plainnat}
 \bibliography{references}

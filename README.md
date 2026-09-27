@@ -87,6 +87,29 @@ Version 2 also corrects several claims of version 1 (listed in the paper's
 appendix), including the burden ratio: version 1's "~1.8x" compared
 full-stream queries against scored-phase actions.
 
+## Version 3 draft: an opaque LLM judge instead of a tool taxonomy
+
+Shell-centric harnesses have no fixed tool set; an LLM judge (such as Claude
+Code's auto-mode classifier) decides allow/block from a restricted view. The
+v3 draft (git tag `arxiv-v2` is the frozen v2) adds Section 12 and
+`lean/TrustCalib/Judge.lean`:
+
+- **Is the judge trustworthy?** A judge's false-allow rate for a supervisor
+  is not identifiable from its verdicts, even together with the supervisor's
+  approval rate (Prop. 6); it rises when the supervisor becomes stricter
+  (Prop. 7); it is estimable without bias only from human labels with known
+  propensities (Prop. 8), and certifying it below `alpha` takes
+  `ln(1/delta)/alpha` clean audits while it drifts.
+- **How likely is a verdict right?** The gateway's calibrated posterior over
+  (judge output, command category, time) answers it per action.
+- Pre-registered simulation (`experiment/judge_prereg.md`,
+  `uv run python -m experiment.run_judge`): escalating the judge's blocks
+  instead of enforcing them cuts regret 0.296 -> 0.088; the calibrated gateway
+  matches that with half the labels (11.8% vs 25.3%). The same judge's
+  false-allow rate for the supervisor goes 2.9% -> 10.0% -> 3.4% around the
+  supervisor's trust reset. Calibration cannot catch a judge blind spot that
+  the gateway's own features do not expose.
+
 ## Layout
 
 ```
@@ -113,6 +136,7 @@ proofs build with `lake` (elan).
 ```
 uv sync                                  # install
 uv run python -m experiment.run          # all tables, figures, paper macros (~1 min)
+uv run python -m experiment.run_judge    # opaque-judge study (~1 min)
 uv run pytest                            # correctness tests
 (cd lean && lake exe cache get && lake build)   # check the proofs
 (cd manuscript && make && make arxiv)    # paper and arXiv bundle

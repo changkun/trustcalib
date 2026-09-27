@@ -91,7 +91,7 @@ full-stream queries against scored-phase actions.
 
 Shell-centric harnesses have no fixed tool set; an LLM judge (such as Claude
 Code's auto-mode classifier) decides allow/block from a restricted view. The
-v3 draft (git tag `arxiv-v2` is the frozen v2) adds Section 12 and
+v3 draft (git tag `v2` is the frozen v2, `v1` the original) adds Section 12 and
 `lean/TrustCalib/Judge.lean`:
 
 - **Is the judge trustworthy?** A judge's false-allow rate for a supervisor

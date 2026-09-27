@@ -76,3 +76,7 @@ __pycache__/
 data/
 # Generated experiment artifacts are committed deliberately and stay tracked:
 #   experiment/figures/*.pdf and experiment/report.md
+
+## arXiv bundle (built by `make arxiv`)
+manuscript/arxiv/
+manuscript/arxiv.tar.gz

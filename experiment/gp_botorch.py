@@ -1,25 +1,26 @@
-"""Optional BoTorch ``PairwiseGP`` cross-check.
+"""Optional BoTorch ``PairwiseGP`` comparison (not part of the v2 pipeline).
 
-The manuscript's Remark 1 states that the unary approve/deny model is a
-degenerate pairwise comparison against a fixed internal reference: the human
-approves when ``f(x)`` exceeds an acceptable-risk threshold. We take that
-literally here. Each observation is encoded as a comparison between the action
-``x`` and a fixed reference point ``r``:
+Version 1 of the manuscript described the unary approve/deny model as a
+degenerate pairwise comparison against a fixed reference. Version 2 corrects
+this (Proposition 1): pairwise comparisons identify the latent function only up
+to a constant, so they cannot locate the approve/deny threshold, which is
+exactly the information unary feedback carries.
+
+This module keeps the v1 encoding for readers who want to compare against a
+maintained preference-learning implementation. Each observation becomes a
+comparison between the action ``x`` and a reference point ``r``:
 
 * ``y = 1`` (approve)  ->  ``x`` preferred over ``r``
 * ``y = 0`` (deny)     ->  ``r`` preferred over ``x``
 
-and fitted with BoTorch's ``PairwiseGP``, which is exactly the Chu & Ghahramani
-(2005) GP preference model with a probit comparison likelihood and a Laplace
-posterior, a maintained and independent implementation of the same PBO
-inference. PairwiseGP carries a comparison noise term, so it accounts for the
-noisy approve/deny observations directly rather than assuming clean labels.
-
-This is a *cross-check*, not the primary engine: it uses BoTorch's default
-ARD-RBF covariance over the concatenated feature vector, not the manuscript's
-structured product kernel, so agreement on the trend (not bit-identical
-numbers) is what we look for. Requires the optional ``botorch`` dependency
-group; importing without it raises a clear error.
+fitted with BoTorch's ``PairwiseGP`` (the Chu & Ghahramani 2005 probit
+comparison likelihood with a Laplace posterior). Note that ``r`` is a point in
+feature space whose latent value is itself random and kernel-correlated with
+nearby actions, not the fixed constant of the unary model, so this is a
+different model: agreement on the trend, not on numbers, is all it can show.
+It uses BoTorch's default ARD-RBF covariance over the concatenated features.
+Requires the optional ``botorch`` dependency group; importing without it
+raises a clear error.
 """
 
 from __future__ import annotations

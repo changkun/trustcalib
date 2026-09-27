@@ -57,7 +57,7 @@ class OracleConfig:
     kappa: float = 130.0      # trust accumulation timescale (in steps)
     veto: float = 3.0         # strength of the safety conjunction
     veto_sens: float = 0.65   # target-sensitivity threshold for the veto
-    changepoint: int | None = 600  # step at which trust resets (Section 6)
+    changepoint: int | None = 750  # step at which trust resets (Section 6)
 
     # Risk aggregation weights (sum ~= 1; r in roughly [0, 1]).
     w_rev: float = 0.28

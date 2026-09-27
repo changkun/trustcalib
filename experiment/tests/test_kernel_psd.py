@@ -27,3 +27,14 @@ def test_block_kernels_individually_psd():
     # Cholesky after the standard jitter.
     L = np.linalg.cholesky(K + 1e-6 * np.eye(len(stream)))
     assert np.all(np.isfinite(L))
+
+
+def test_additive_and_linear_kernels_psd():
+    from experiment.kernel import AdditiveKernel, LinearKernel
+
+    P = pack(make_stream(120, seed=5))
+    for k in (AdditiveKernel(), LinearKernel()):
+        K = k.full(P)
+        assert np.allclose(K, K.T, atol=1e-10)
+        assert np.linalg.eigvalsh(K).min() > -1e-8
+        assert np.allclose(np.diag(K), k.diag(P), atol=1e-9)

@@ -3,9 +3,8 @@
 This is the inference machinery the manuscript cites verbatim (Rasmussen &
 Williams 2006, Algorithm 3.1 for the posterior mode and Algorithm 3.2 for
 predictions), specialized to the probit likelihood of Definition 1. Keeping it
-dependency-light (numpy + scipy only) makes the structural identity with
-Preferential Bayesian Optimization legible rather than hidden inside a tensor
-framework. An optional BoTorch ``PairwiseGP`` cross-check lives in
+dependency-light (numpy + scipy only) keeps the inference legible rather than
+hidden inside a tensor framework. An optional BoTorch ``PairwiseGP`` cross-check lives in
 :mod:`experiment.gp_botorch`.
 
 Likelihood (probit), with labels mapped to ``y in {-1, +1}`` and ``z = y f``:
@@ -131,3 +130,71 @@ class LaplaceGPC:
     def predict_prob(self, Q: Packed) -> np.ndarray:
         """Just ``p_hat(x_*)`` for each test point."""
         return self.predict(Q)[2]
+
+
+class EvidenceSelectedGPC:
+    """Laplace GP-probit with kernel hyperparameters chosen by type-II maximum
+    likelihood: at checkpoints (every ``select_every`` new labels) every
+    candidate kernel is fitted and the one with the largest Laplace log
+    marginal likelihood (R&W 3.32) is kept until the next checkpoint.
+
+    A grid rather than gradient ascent keeps the selection transparent and
+    reproducible; the grids used are listed in ``run.py`` and the report.
+    """
+
+    def __init__(self, candidates, select_every: int = 64, **gp_kw):
+        if not candidates:
+            raise ValueError("need at least one candidate kernel")
+        self.candidates = list(candidates)
+        self.select_every = select_every
+        self.gp_kw = gp_kw
+        self.idx = 0
+        self.model = LaplaceGPC(self.candidates[0], **gp_kw)
+        self._n_at_select = None
+        self.history: list[tuple[int, str, float]] = []
+
+    @property
+    def kernel(self):
+        return self.candidates[self.idx]
+
+    @property
+    def log_marginal(self) -> float:
+        return self.model.log_marginal
+
+    def fit(self, P: Packed, y01: np.ndarray) -> "EvidenceSelectedGPC":
+        n = int(np.asarray(y01).shape[0])
+        if self._n_at_select is None or n - self._n_at_select >= self.select_every:
+            best = None
+            for i, k in enumerate(self.candidates):
+                m = LaplaceGPC(k, **self.gp_kw).fit(P, y01)
+                if best is None or m.log_marginal > best[0]:
+                    best = (m.log_marginal, i, m)
+            _, self.idx, self.model = best
+            self._n_at_select = n
+            self.history.append((n, self.kernel.describe(), float(best[0])))
+        else:
+            self.model = LaplaceGPC(self.kernel, **self.gp_kw).fit(P, y01)
+        return self
+
+    def predict(self, Q: Packed):
+        return self.model.predict(Q)
+
+    def predict_prob(self, Q: Packed) -> np.ndarray:
+        return self.model.predict_prob(Q)
+
+
+# Houlsby et al. (2011) closed-form BALD for the probit GP classifier, in bits:
+#   I(x) ~= h(Phi(mu / sqrt(1 + var))) - C / sqrt(var + C^2) * exp(-mu^2 / (2 (var + C^2)))
+# with h the binary entropy in bits and C^2 = pi ln 2 / 2. The first term is the
+# total predictive entropy; the second is the expected aleatoric entropy. BALD is
+# their difference: the epistemic part a label would resolve.
+_BALD_C2 = np.pi * np.log(2.0) / 2.0
+
+
+def bald(mu, var):
+    mu = np.asarray(mu, dtype=float)
+    var = np.asarray(var, dtype=float)
+    p = np.clip(norm.cdf(mu / np.sqrt(1.0 + var)), 1e-12, 1 - 1e-12)
+    h = -(p * np.log2(p) + (1 - p) * np.log2(1 - p))
+    aleatoric = np.sqrt(_BALD_C2 / (var + _BALD_C2)) * np.exp(-(mu**2) / (2 * (var + _BALD_C2)))
+    return h - aleatoric

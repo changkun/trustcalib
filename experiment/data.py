@@ -18,7 +18,7 @@ observation model. The ground-truth oracle lives in :mod:`experiment.oracle`;
 this module owns only the action/context space and the stream sampler.
 
 This is a controlled simulation study with a known ground-truth oracle, which
-is standard methodology for Preferential Bayesian Optimization. The tool
+is the standard protocol for GP preference and level-set methods. The tool
 taxonomy below is our own design informed by common agent tools; it is not
 reused from any dataset's labels.
 """

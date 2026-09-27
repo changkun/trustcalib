@@ -1,50 +1,41 @@
-"""Regression test for the manuscript's *supported* headline claim
-(Section 1): the GP policy gateway auto-decides most actions safely and
-accurately while spending far fewer human queries than the always-escalate
-status quo.
-
-(The manuscript's Section 5 claim that ASK-band acquisition is more
-sample-efficient than random querying is, in this non-stationary setting,
-not supported; that negative finding is reported in `report.md` and is not
-asserted here because it is empirically false under the Section 6
-changepoint.)"""
+"""Regression test for the headline operational claim (Section 11): with the
+additive kernel and the cost-derived symmetric band, the gateway auto-decides
+most actions accurately and safely while spending far fewer human labels than
+the always-escalate status quo, and fewer than the v1 product kernel."""
 
 import numpy as np
 
 from experiment.data import make_stream
-from experiment.eval import phase_metrics, total_queries
-from experiment.gateway import run_gateway
+from experiment.eval import phase_metrics, scored_queries
+from experiment.gateway import SYMMETRIC, run_gateway
 from experiment.gp import LaplaceGPC
-from experiment.kernel import ProductKernel
+from experiment.kernel import AdditiveKernel, ProductKernel
 from experiment.oracle import OracleConfig
 
 
-def _k():
-    return ProductKernel(sigma2=1.6, l_tool=1.1, l_ctx=1.2, lam=200.0)
-
-
-def test_gateway_reduces_human_burden_safely():
-    n, t1, t2 = 900, 360, 650
-    auto_rate, acc, fa, q_frac = [], [], [], []
-    for s in range(3):
+def _run(kernel, seeds=range(3)):
+    n, t_warm, t_late = 900, 360, 650
+    out = []
+    for s in seeds:
         stream = make_stream(n, seed=1000 + s)
         cfg = OracleConfig(changepoint=470)
-        res = run_gateway(
-            stream, LaplaceGPC(_k()), np.random.default_rng(s), cfg, t1, t2,
-            query_strategy="active",
-        )
-        m = phase_metrics(res, "val")
-        scored = sum(1 for x in res.steps if x.phase in ("val", "test"))
-        auto_rate.append(m["auto_rate"])
-        acc.append(m["accuracy_auto"])
-        fa.append(m["false_allow_rate"])
-        q_frac.append(total_queries(res) / scored)
+        res = run_gateway(stream, LaplaceGPC(kernel), np.random.default_rng(s), cfg,
+                          t_warm, t_late, band=SYMMETRIC.band)
+        m = phase_metrics(res)
+        q, steps = scored_queries(res)
+        out.append((m["auto_rate"], m["accuracy_auto"], m["false_allow_rate"], q / steps))
+    return np.mean(np.array(out), axis=0)
 
-    # Substantial automation ...
-    assert np.mean(auto_rate) > 0.5, np.mean(auto_rate)
-    # ... that is accurate ...
-    assert np.mean(acc) > 0.90, np.mean(acc)
-    # ... and safe (bounded false-allow) ...
-    assert np.mean(fa) < 0.05, np.mean(fa)
-    # ... at far below one-query-per-action (the always-escalate status quo).
-    assert np.mean(q_frac) < 0.6, np.mean(q_frac)
+
+def test_additive_gateway_reduces_human_burden_safely():
+    auto, acc, fa, qfrac = _run(AdditiveKernel(1.6, 1.0, 0.6, lam=90.0))
+    assert auto > 0.7, auto        # substantial automation ...
+    assert acc > 0.90, acc         # ... that is accurate ...
+    assert fa < 0.05, fa           # ... and safe (bounded false-allow) ...
+    assert qfrac < 0.3, qfrac      # ... at far below one label per action.
+
+
+def test_additive_needs_fewer_labels_than_product():
+    *_, q_add = _run(AdditiveKernel(1.6, 1.0, 0.6, lam=90.0))
+    *_, q_prod = _run(ProductKernel(1.6, 1.1, 1.2, lam=90.0))
+    assert q_add < q_prod, (q_add, q_prod)

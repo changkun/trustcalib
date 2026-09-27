@@ -1,685 +1,754 @@
-"""Run the progressive-autonomy experiment: simulate, evaluate, plot, report.
+"""Run the progressive-autonomy simulation study (manuscript Section 11).
 
 WHAT THIS DOES AND DOES NOT SHOW
 --------------------------------
-This is a controlled simulation study with a *known* ground-truth oracle
-(:mod:`experiment.oracle`), which is the standard way Preferential Bayesian
-Optimization methods are evaluated. It demonstrates that the manuscript's
-GP-probit policy gateway, on a realistic agent-action distribution,
+A controlled simulation with a known ground-truth oracle
+(:mod:`experiment.oracle`), the standard protocol for GP preference and
+level-set methods: "the method recovers the oracle" means "the inference is
+correct under the model", not "the real world behaves like this". No public
+dataset carries a single supervisor's per-action approve/deny decisions as
+their tolerance drifts.
 
-  * learns a drifting human risk-tolerance function from sparse approve/deny
-    feedback (Definition 1, Sections 3-4),
-  * spends human interruptions where they are most informative and drives the
-    auto-approve rate up as the posterior concentrates (Section 5),
-  * generalizes evidence across correlated actions (Section 7), and
-  * tracks an abrupt non-stationary shift (Section 6),
-
-at a large reduction in human burden versus the always-escalate status quo
-and far better than a no-correlation baseline. It also surfaces an honest
-negative result: under the Section 6 changepoint, the ASK-band acquisition
-rule taken literally is no more sample-efficient than random querying,
-because confident regions are never re-probed (an exploration deficit). That
-finding is reported, not tuned away.
-
-It is NOT a validation on real human approval data. No public dataset carries
-a single supervisor's per-action approve/deny decisions tracked as their risk
-tolerance drifts; see the Limitations section of the report and the
-manuscript. The synthetic generator IS the manuscript's generative model, so
-"the method recovers the oracle" means "the inference is correct", not "the
-real world behaves like this".
+Every number in ``report.md``, every figure in ``figures/`` and every macro in
+``manuscript/generated/`` is produced by this script. There is no threshold
+tuning: the three-tier band is derived from stated costs (Proposition 2).
 
 Usage:  uv run python -m experiment.run
 """
 
 from __future__ import annotations
 
+import json
 import os
+from concurrent.futures import ProcessPoolExecutor
 
-import matplotlib
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+import matplotlib  # noqa: E402
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 
-from .data import TASKS, TOOLS, DecisionPoint, make_stream
-from .eval import (
+from .data import TOOLS, DecisionPoint, make_stream  # noqa: E402
+from .eval import (  # noqa: E402
+    SCORED,
+    CellModel,
     IndependentModel,
-    aggregate,
+    audit_estimate,
     boundary_accuracy,
+    held_out_decisions,
     phase_metrics,
     policy_trajectory,
-    total_queries,
+    query_placement,
+    scored_queries,
     transfer_accuracy,
 )
-from .gateway import run_gateway
-from .gp import LaplaceGPC
-from .kernel import ProductKernel
-from .oracle import OracleConfig, approve_prob
+from .gateway import ALLOW, ASK, SAFETY, SYMMETRIC, Costs, run_gateway  # noqa: E402
+from .gp import EvidenceSelectedGPC, LaplaceGPC  # noqa: E402
+from .kernel import AdditiveKernel, LinearKernel, ProductKernel, pack  # noqa: E402
+from .oracle import OracleConfig, _veto_active, approve_prob  # noqa: E402
 
-FIGDIR = os.path.join(os.path.dirname(__file__), "figures")
-REPORT = os.path.join(os.path.dirname(__file__), "report.md")
+HERE = os.path.dirname(__file__)
+FIGDIR = os.path.join(HERE, "figures")
+REPORT = os.path.join(HERE, "report.md")
+RESULTS = os.path.join(HERE, "results.json")
+GENDIR = os.path.join(HERE, "..", "manuscript", "generated")
 
 N = 1500
-T1 = 560          # learn:  [0, 560)
-T2 = 1050         # val:    [560, 1050)   test: [1050, 1500)
-CHANGEPOINT = 750  # Section 6 abrupt shift (inside the val phase)
-SEEDS = list(range(6))
-HELD_TOOL, HELD_TARGET = "write_file", "workspace_tests"
+T_WARM = 560       # learn [0, 560) is warm-up and not scored
+T_LATE = 1050      # scored: early [560, 1050) (contains the changepoint), late [1050, 1500)
+CHANGEPOINT = 750
+SEEDS = list(range(10))
+ACQ_SEEDS = list(range(20))
+AUDIT_EPS = 0.05
 
-TEST_KEYS = [
-    "accuracy_auto",
-    "false_allow_rate",
-    "ask_rate",
-    "auto_rate",
-    "prob_rmse",
-    "ece",
-]
-
-
-def _kernel() -> ProductKernel:
-    return ProductKernel(sigma2=1.6, l_tool=1.1, l_ctx=1.2, lam=90.0)
-
-
-def _cfg() -> OracleConfig:
-    return OracleConfig(changepoint=CHANGEPOINT)
+LAMS = (60.0, 120.0, 240.0, 480.0)
+ADD_SPLITS = ((1.6, 1.0, 0.6), (3.2, 1.0, 0.6), (1.6, 2.0, 0.6), (1.6, 1.0, 1.6))
+COSTS = {"symmetric": SYMMETRIC, "safety": SAFETY}
+ORACLES = {
+    "changepoint": dict(changepoint=CHANGEPOINT),
+    # trust saturates at once and never resets: f* is static, the veto is off
+    "stationary": dict(kappa=1e-9, changepoint=None),
+}
+HOLDOUTS = {
+    "dangerous": ("git_force_push", "prod_infra"),
+    "benign": ("write_file", "workspace_tests"),
+}
 
 
-def _held(dp: DecisionPoint) -> bool:
-    return dp.tool.name == HELD_TOOL and dp.target == HELD_TARGET
+# --------------------------------------------------------------------------- #
+# Models (module-level factories so worker processes can build them)
+# --------------------------------------------------------------------------- #
+def m_per_tool():
+    return IndependentModel()
+
+
+def m_per_cell():
+    return CellModel()
+
+
+def m_product_v1():
+    return LaplaceGPC(ProductKernel(sigma2=1.6, l_tool=1.1, l_ctx=1.2, lam=90.0))
+
+
+def m_product_eb():
+    return EvidenceSelectedGPC(
+        [ProductKernel(s, 1.1, 1.2, lam) for s in (1.6, 3.2) for lam in (*LAMS, 960.0)])
+
+
+def m_linear_eb():
+    return EvidenceSelectedGPC([LinearKernel(lam=lam) for lam in LAMS])
+
+
+def m_additive():
+    # Pre-registered in the v1 review before any v2 run: 1.6 / 1.0 / 0.6, lam = 90.
+    return LaplaceGPC(AdditiveKernel(1.6, 1.0, 0.6, lam=90.0))
+
+
+def m_additive_eb():
+    return EvidenceSelectedGPC(
+        [AdditiveKernel(a, b, c, lam=lam) for (a, b, c) in ADD_SPLITS for lam in LAMS])
+
+
+MODELS = {
+    "per-tool": m_per_tool,
+    "per-cell": m_per_cell,
+    "product-v1": m_product_v1,
+    "product-EB": m_product_eb,
+    "linear-EB": m_linear_eb,
+    "additive": m_additive,
+    "additive-EB": m_additive_eb,
+}
+LABELS = {
+    "per-tool": "Per-tool Beta (v1 baseline)",
+    "per-cell": "Per-cell Beta",
+    "product-v1": r"Product, $\lambda{=}90$ (v1)",
+    "product-EB": "Product, evidence-selected",
+    "linear-EB": "Linear probit + drift, ev.-sel.",
+    "additive": r"Additive, $\lambda{=}90$ (v2)",
+    "additive-EB": "Additive, evidence-selected",
+}
+GP_MODELS = ["product-v1", "product-EB", "linear-EB", "additive", "additive-EB"]
+
+
+def _cfg(name: str = "changepoint") -> OracleConfig:
+    return OracleConfig(**ORACLES[name])
+
+
+def _stream(seed: int):
+    return make_stream(N, seed=1000 + seed)
 
 
 def _probe_action() -> DecisionPoint:
     """A recurring moderate action whose acceptability drifts over time."""
     tool = next(t for t in TOOLS if t.name == "apply_patch")
-    dp = DecisionPoint(
-        t=0, tool=tool, target="build_config", task="feature_dev",
-        arg_risk=0, target_sens=0.55,
-    )
-    return dp.featurize()
+    return DecisionPoint(t=0, tool=tool, target="build_config", task="feature_dev",
+                         arg_risk=0, target_sens=0.55).featurize()
 
 
-def run_all_seeds():
-    rows = {ph: {"gp": [], "rand": [], "ind": []} for ph in ("val", "test")}
-    bnd = {"gp": [], "rand": []}
-    nq = {"gp": [], "rand": [], "escalate": []}
-    transfer = {"gp": [], "ind": []}
-    keep = {}
-
-    for s in SEEDS:
-        stream = make_stream(N, seed=1000 + s)
-        cfg = _cfg()
-
-        # --- GP gateway, active acquisition (ours) ----------------------- #
-        res_gp = run_gateway(
-            stream, LaplaceGPC(_kernel()), np.random.default_rng(s),
-            cfg, T1, T2, query_strategy="active",
-        )
-        q_active = total_queries(res_gp)
-
-        # --- GP gateway, random query at matched full-stream budget ------ #
-        rate = q_active / float(N)
-        res_rand = run_gateway(
-            stream, LaplaceGPC(_kernel()), np.random.default_rng(100 + s),
-            cfg, T1, T2, query_strategy="random", random_query_rate=rate,
-        )
-
-        # --- Independent (no kernel correlation), active ----------------- #
-        res_ind = run_gateway(
-            stream, IndependentModel(), np.random.default_rng(200 + s),
-            cfg, T1, T2, query_strategy="active",
-        )
-
-        for ph in ("val", "test"):
-            rows[ph]["gp"].append(phase_metrics(res_gp, ph))
-            rows[ph]["rand"].append(phase_metrics(res_rand, ph))
-            rows[ph]["ind"].append(phase_metrics(res_ind, ph))
-        bnd["gp"].append(boundary_accuracy(res_gp))
-        bnd["rand"].append(boundary_accuracy(res_rand))
-        nq["gp"].append(q_active)
-        nq["rand"].append(total_queries(res_rand))
-        # Status quo: one human query per action over the scored phases.
-        nq["escalate"].append(
-            sum(1 for x in res_gp.steps if x.phase in ("val", "test"))
-        )
-
-        # --- Section 7 transfer test (held-out combo) -------------------- #
-        res_gp_ho = run_gateway(
-            stream, LaplaceGPC(_kernel()), np.random.default_rng(300 + s),
-            cfg, T1, T2, query_strategy="active", hold_out=_held,
-        )
-        res_ind_ho = run_gateway(
-            stream, IndependentModel(), np.random.default_rng(400 + s),
-            cfg, T1, T2, query_strategy="active", hold_out=_held,
-        )
-        held_pts = [dp for dp in stream if _held(dp)]
-        transfer["gp"].append(
-            transfer_accuracy(res_gp_ho.frozen_model, held_pts, cfg)
-        )
-        transfer["ind"].append(
-            transfer_accuracy(res_ind_ho.frozen_model, held_pts, cfg)
-        )
-
-        if s == 0:
-            keep["res_gp"] = res_gp
-            keep["res_rand"] = res_rand
-            keep["stream"] = stream
-
-    agg = {
-        ph: {
-            "gp": aggregate(rows[ph]["gp"], TEST_KEYS),
-            "rand": aggregate(rows[ph]["rand"], TEST_KEYS),
-            "ind": aggregate(rows[ph]["ind"], TEST_KEYS),
-        }
-        for ph in ("val", "test")
-    }
-    summary = dict(
-        agg=agg,
-        bnd={k: (float(np.nanmean(v)), float(np.nanstd(v)))
-             for k, v in bnd.items()},
-        nq={k: (float(np.mean(v)), float(np.std(v))) for k, v in nq.items()},
-        transfer={k: (float(np.nanmean(v)), float(np.nanstd(v)))
-                  for k, v in transfer.items()},
-        reliability=rows["val"]["gp"][0]["_reliability"],
-    )
-    return summary, keep
+def _strip(d: dict) -> dict:
+    return {k: v for k, v in d.items() if not k.startswith("_")}
 
 
-def run_diagnostics(seed: int = 0):
-    """One continuously-learning run for the drift and policy-surface figures."""
-    stream = make_stream(N, seed=1000 + seed)
-    cfg = _cfg()
-    probe = _probe_action()
-    model = LaplaceGPC(_kernel())
-    # t1 = t2 = N: never freeze, learn across the whole stream.
-    res = run_gateway(
-        stream, model, np.random.default_rng(seed), cfg, N, N,
-        query_strategy="active", probe=probe,
-    )
-    return stream, cfg, res, model, probe
-
-
-def acquisition_ablation(seeds: int = 5):
-    """Isolate the cause of the ASK-band vs random reversal: matched-budget
-    prequential boundary accuracy with the Section 6 changepoint on vs off.
-    If active loses even when stationary, the deficit is the generic
-    uncertainty-sampling-under-imbalance effect, only amplified by the
-    changepoint, not caused by it."""
-    out = {}
-    for label, cp in (("stationary", None), ("changepoint", CHANGEPOINT)):
-        da, dr = [], []
-        for s in range(seeds):
-            stream = make_stream(N, seed=1000 + s)
-            cfg = OracleConfig(changepoint=cp)
-            ra = run_gateway(
-                stream, LaplaceGPC(_kernel()), np.random.default_rng(s),
-                cfg, T1, T2, query_strategy="active",
-            )
-            q = total_queries(ra)
-            rr = run_gateway(
-                stream, LaplaceGPC(_kernel()),
-                np.random.default_rng(50 + s), cfg, T1, T2,
-                query_strategy="random", random_query_rate=q / float(N),
-            )
-            da.append(boundary_accuracy(ra))
-            dr.append(boundary_accuracy(rr))
-        out[label] = (float(np.mean(da)), float(np.mean(dr)))
+def summarize(res, stream, cfg, costs: Costs) -> dict:
+    out = {ph: _strip(phase_metrics(res, phases, costs))
+           for ph, phases in (("early", ("early",)), ("late", ("late",)), ("scored", SCORED))}
+    veto = [s for s, d in zip(res.steps, stream) if s.phase in SCORED and _veto_active(d, cfg)]
+    out["veto_n"] = len(veto)
+    out["veto_allow"] = float(np.mean([s.decision == ALLOW for s in veto])) if veto else float("nan")
+    q, n = scored_queries(res)
+    out["labels_per_action"] = q / n
+    out["audit"] = audit_estimate(res)
+    out["boundary"] = boundary_accuracy(res)
+    hist = getattr(res.final_model, "history", None)
+    out["selected"] = hist[-1][1] if hist else None
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Jobs (run in worker processes)
+# --------------------------------------------------------------------------- #
+def job_main(spec):
+    model, costs, eps, seed = spec
+    stream, cfg = _stream(seed), _cfg()
+    res = run_gateway(stream, MODELS[model](), np.random.default_rng(seed), cfg, T_WARM, T_LATE,
+                      band=COSTS[costs].band, audit_rate=eps)
+    out = summarize(res, stream, cfg, COSTS[costs])
+    if seed == 0 and costs == "symmetric" and eps == 0:
+        out["_reliability"] = phase_metrics(res, SCORED)["_reliability"]
+        out["_trajectory"] = {k: v.tolist() for k, v in policy_trajectory(res, 70).items()}
+        out["_cum_queries"] = np.cumsum([s.queried for s in res.steps]).tolist()
+    if model == "product-v1" and costs == "symmetric" and eps == 0:
+        # Evidence ranking on the labels the v1 gateway actually collected.
+        fm = res.final_model
+        P, y = fm._P, (fm._y > 0).astype(int)
+        cands = {
+            "product λ=90 (v1)": ProductKernel(1.6, 1.1, 1.2, 90.0),
+            "product λ=480": ProductKernel(1.6, 1.1, 1.2, 480.0),
+            "linear+drift λ=90": LinearKernel(lam=90.0),
+            "additive λ=90 (v2)": AdditiveKernel(1.6, 1.0, 0.6, lam=90.0),
+            "additive λ=480": AdditiveKernel(1.6, 1.0, 0.6, lam=480.0),
+        }
+        out["_evidence"] = {k: LaplaceGPC(kk).fit(P, y).log_marginal for k, kk in cands.items()}
+    return spec, out
+
+
+def job_acq(spec):
+    kernel, oracle, seed = spec
+    stream, cfg = _stream(seed), _cfg(oracle)
+    mk = {"product-v1": m_product_v1, "additive": m_additive}[kernel]
+    ra = run_gateway(stream, mk(), np.random.default_rng(seed), cfg, T_WARM, T_LATE)
+    rate = sum(s.queried for s in ra.steps) / N
+    rr = run_gateway(stream, mk(), np.random.default_rng(100 + seed), cfg, T_WARM, T_LATE,
+                     query_strategy="random", query_rate=rate)
+    rb = run_gateway(stream, mk(), np.random.default_rng(200 + seed), cfg, T_WARM, T_LATE,
+                     query_strategy="bald", query_rate=rate)
+    return spec, {
+        "budget": rate,
+        "band": boundary_accuracy(ra), "random": boundary_accuracy(rr),
+        "bald": boundary_accuracy(rb),
+        "q_band": sum(s.queried for s in ra.steps), "q_random": sum(s.queried for s in rr.steps),
+        "q_bald": sum(s.queried for s in rb.steps),
+        "place_band": query_placement(ra), "place_random": query_placement(rr),
+        "place_bald": query_placement(rb),
+    }
+
+
+def job_hold(spec):
+    model, hold, seed = spec
+    tool, target = HOLDOUTS[hold]
+
+    def h(dp):
+        return dp.tool.name == tool and dp.target == target
+
+    stream, cfg = _stream(seed), _cfg()
+    res = run_gateway(stream, MODELS[model](), np.random.default_rng(300 + seed), cfg,
+                      T_WARM, T_LATE, hold_out=h)
+    out = held_out_decisions(res, stream, h)
+    out["final_acc"] = transfer_accuracy(res.final_model, [d for d in stream if h(d)], cfg)
+    return spec, out
+
+
+def _pool_map(fn, specs):
+    with ProcessPoolExecutor(max_workers=max(1, (os.cpu_count() or 2) - 2)) as ex:
+        return dict(ex.map(fn, specs, chunksize=1))
+
+
+# --------------------------------------------------------------------------- #
+# Aggregation helpers
+# --------------------------------------------------------------------------- #
+def ms(vals) -> tuple[float, float]:
+    v = np.asarray([x for x in vals if x is not None and np.isfinite(x)], dtype=float)
+    return (float(v.mean()), float(v.std())) if v.size else (float("nan"), float("nan"))
+
+
+def paired(a, b) -> tuple[float, float, int, int]:
+    d = np.asarray(a) - np.asarray(b)
+    return float(d.mean()), float(d.std(ddof=1) / np.sqrt(len(d))), int(np.sum(d > 0)), len(d)
 
 
 # --------------------------------------------------------------------------- #
 # Figures
 # --------------------------------------------------------------------------- #
-def fig_policy_evolution(res, path):
-    tr = policy_trajectory(res, window=70)
-    fig, ax = plt.subplots(figsize=(8, 4.2))
-    ax.stackplot(
-        tr["t"], tr["allow"], tr["ask"], tr["block"],
-        labels=["ALLOW (auto)", "ASK (escalate)", "BLOCK (auto)"],
-        colors=["#0D9488", "#F59E0B", "#DC2626"], alpha=0.9,
-    )
-    ax.axvline(CHANGEPOINT, color="k", ls="--", lw=1)
-    ax.text(CHANGEPOINT + 8, 0.04, "trust changepoint (Section 6)", fontsize=8)
-    for x, lab in [(T1, "val"), (T2, "test")]:
-        ax.axvline(x, color="white", ls=":", lw=1)
-        ax.text(x + 6, 0.92, lab, fontsize=8, color="white")
-    ax.set_xlim(tr["t"][0], tr["t"][-1])
-    ax.set_ylim(0, 1)
-    ax.set_xlabel("decision point t")
-    ax.set_ylabel("rolling policy mix")
-    ax.set_title("Policy evolution: the ASK band narrows as the posterior "
-                 "concentrates")
-    ax.legend(loc="lower right", fontsize=8, framealpha=0.9)
+C_V1, C_V2, C_LIN, C_REF = "#6B7280", "#0D9488", "#7C3AED", "#DC2626"
+
+
+def fig_policy_evolution(main, path):
+    fig, axes = plt.subplots(1, 2, figsize=(11, 3.8), sharey=True)
+    for ax, model, ttl in ((axes[0], "product-v1", r"v1: product kernel, $\lambda=90$"),
+                           (axes[1], "additive", r"v2: additive kernel, $\lambda=90$")):
+        tr = main[(model, "symmetric", 0.0, 0)]["_trajectory"]
+        ax.stackplot(tr["t"], tr["allow"], tr["ask"], tr["block"],
+                     labels=["ALLOW (auto)", "ASK (escalate)", "BLOCK (auto)"],
+                     colors=["#0D9488", "#F59E0B", "#DC2626"], alpha=0.9)
+        ax.axvline(CHANGEPOINT, color="k", ls="--", lw=1)
+        ax.axvline(T_WARM, color="white", ls=":", lw=1)
+        ax.set_xlim(0, N - 1)
+        ax.set_ylim(0, 1)
+        ax.set_xlabel("decision point t")
+        ax.set_title(ttl, fontsize=10)
+    axes[0].set_ylabel("rolling policy mix (window 70)")
+    axes[1].legend(loc="lower right", fontsize=8, framealpha=0.9)
     fig.tight_layout()
-    fig.savefig(path, dpi=300)
+    fig.savefig(path)
     plt.close(fig)
 
 
-def fig_auto_vs_query(res, path):
-    tr = policy_trajectory(res, window=70)
-    fig, ax = plt.subplots(figsize=(8, 4.2))
-    ax.plot(tr["t"], tr["allow"], color="#0D9488", label="auto-approve rate")
-    ax.plot(tr["t"], tr["ask"], color="#F59E0B", label="human-query rate")
-    ax.axhspan(0.85, 0.90, color="#0D9488", alpha=0.12,
-               label="manuscript target 85-90%")
-    ax.axvline(CHANGEPOINT, color="k", ls="--", lw=1)
-    ax.set_xlim(tr["t"][0], tr["t"][-1])
-    ax.set_ylim(0, 1)
-    ax.set_xlabel("decision point t")
-    ax.set_ylabel("rolling rate")
-    ax.set_title("Auto-approve rate rises; query rate falls (Section 5 remark)")
-    ax.legend(loc="center right", fontsize=8)
-    fig.tight_layout()
-    fig.savefig(path, dpi=300)
-    plt.close(fig)
-
-
-def fig_query_savings(res_gp, path):
-    """Cumulative human queries: the gateway vs the always-escalate status
-    quo (one query per action). The gap is the manuscript's Section 1
-    burden-reduction claim."""
-    idx, cum = [], []
-    c = 0
-    for k, st in enumerate(res_gp.steps):
-        if st.queried:
-            c += 1
-        idx.append(k)
-        cum.append(c)
-    idx = np.array(idx)
-    cum = np.array(cum)
-    fig, ax = plt.subplots(figsize=(7.6, 4.2))
-    ax.plot(idx, idx + 1, color="#DC2626", ls="--",
-            label="always escalate (status quo)")
-    ax.plot(idx, cum, color="#0D9488", lw=2,
-            label="GP gateway: human queries spent")
-    ax.fill_between(idx, cum, idx + 1, color="#0D9488", alpha=0.12)
-    ax.axvline(T1, color="gray", ls=":", lw=1)
-    ax.axvline(T2, color="gray", ls=":", lw=1)
-    ax.annotate(
-        f"{cum[-1]} vs {idx[-1] + 1} queries\n"
-        f"({(idx[-1] + 1) / max(cum[-1], 1):.1f}x fewer interruptions)",
-        xy=(idx[-1], cum[-1]), xytext=(0.42 * N, 0.62 * N),
-        fontsize=9, arrowprops=dict(arrowstyle="->", color="#0D9488"),
-    )
+def fig_query_savings(main, path):
+    fig, ax = plt.subplots(figsize=(6.4, 3.8))
+    idx = np.arange(N)
+    ax.plot(idx, idx + 1, color=C_REF, ls="--", label="always escalate (status quo)")
+    for model, col, lab in (("product-v1", C_V1, "v1 product kernel"),
+                            ("additive", C_V2, "v2 additive kernel")):
+        cum = np.asarray(main[(model, "symmetric", 0.0, 0)]["_cum_queries"])
+        ax.plot(idx, cum, color=col, lw=2, label=f"{lab}: {cum[-1]} labels")
+    ax.axvline(T_WARM, color="gray", ls=":", lw=1)
+    ax.axvline(CHANGEPOINT, color="k", ls="--", lw=0.8)
     ax.set_xlabel("decision point t")
     ax.set_ylabel("cumulative human queries")
-    ax.set_title("Human-interruption budget: gateway vs always-escalate "
-                 "(Section 1)")
-    ax.legend(loc="upper left", fontsize=9)
+    ax.legend(loc="upper left", fontsize=8)
     fig.tight_layout()
-    fig.savefig(path, dpi=300)
+    fig.savefig(path)
     plt.close(fig)
 
 
-def fig_calibration(bins, path):
-    fig, ax = plt.subplots(figsize=(5.2, 5.0))
+def fig_calibration(main, path):
+    fig, ax = plt.subplots(figsize=(4.4, 4.2))
     ax.plot([0, 1], [0, 1], color="k", ls="--", lw=1, label="perfect")
-    xs = [b[0] for b in bins if b[2] > 0]
-    ys = [b[1] for b in bins if b[2] > 0]
-    ax.plot(xs, ys, "o-", color="#0D9488", label="GP gateway (val phase)")
+    for model, col, lab in (("product-v1", C_V1, "v1 product"), ("additive", C_V2, "v2 additive"),
+                            ("linear-EB", C_LIN, "linear + drift")):
+        bins = main[(model, "symmetric", 0.0, 0)]["_reliability"]
+        xs = [b[0] for b in bins if b[2] > 0]
+        ys = [b[1] for b in bins if b[2] > 0]
+        ax.plot(xs, ys, "o-", color=col, label=lab, ms=4)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
-    ax.set_xlabel("predicted approval probability $\\hat p$")
-    ax.set_ylabel("ground-truth probability $\\Phi(f^*)$")
-    ax.set_title("Reliability vs ground-truth probability")
-    ax.legend(loc="upper left", fontsize=9)
+    ax.set_xlabel(r"predicted approval probability $\hat p$")
+    ax.set_ylabel(r"true probability $\Phi(f^*)$ (bin mean)")
+    ax.legend(loc="upper left", fontsize=8)
     fig.tight_layout()
-    fig.savefig(path, dpi=300)
+    fig.savefig(path)
     plt.close(fig)
 
 
-def fig_drift(res, path):
-    if not res.probe_trace:
-        return
-    arr = np.array(res.probe_trace)
-    fig, ax = plt.subplots(figsize=(8, 4.2))
-    ax.plot(arr[:, 0], arr[:, 2], color="k", lw=2,
-            label="oracle approval prob $\\Phi(f^*)$")
-    ax.plot(arr[:, 0], arr[:, 1], color="#0D9488", lw=1.6, marker=".",
-            ms=4, label="gateway posterior $\\hat p$")
-    ax.axvline(CHANGEPOINT, color="#DC2626", ls="--", lw=1,
-               label="trust changepoint")
-    ax.set_xlim(arr[:, 0].min(), arr[:, 0].max())
+def fig_drift(path):
+    stream, cfg, probe = _stream(0), _cfg(), _probe_action()
+    fig, ax = plt.subplots(figsize=(6.4, 3.8))
+    first = True
+    for mk, col, lab in ((m_product_v1, C_V1, "v1 product"), (m_additive, C_V2, "v2 additive")):
+        res = run_gateway(stream, mk(), np.random.default_rng(0), cfg, N, N, probe=probe)
+        arr = np.asarray(res.probe_trace)
+        if first:
+            ax.plot(arr[:, 0], arr[:, 2], color="k", lw=2, label=r"oracle $\Phi(f^*)$")
+            first = False
+        ax.plot(arr[:, 0], arr[:, 1], color=col, lw=1.4, label=f"{lab} " + r"$\hat p$")
+    ax.axvline(CHANGEPOINT, color=C_REF, ls="--", lw=1, label="trust changepoint")
     ax.set_ylim(0, 1)
     ax.set_xlabel("decision point t")
-    ax.set_ylabel("approval probability for a fixed probe action")
-    ax.set_title("Non-stationarity: the posterior tracks drift and the "
-                 "abrupt reset (Section 6)")
+    ax.set_ylabel("approval probability, fixed probe action")
     ax.legend(loc="lower right", fontsize=8)
     fig.tight_layout()
-    fig.savefig(path, dpi=300)
+    fig.savefig(path)
     plt.close(fig)
 
 
-def fig_transfer(transfer, path):
-    g_m, g_s = transfer["gp"]
-    i_m, i_s = transfer["ind"]
-    fig, ax = plt.subplots(figsize=(5.4, 4.4))
-    ax.bar([0, 1], [g_m, i_m], yerr=[g_s, i_s], capsize=5,
-           color=["#0D9488", "#6B7280"], width=0.55)
-    ax.set_xticks([0, 1])
-    ax.set_xticklabels(["GP gateway\n(kernel correlation)",
-                        "Independent\n(per-tool only)"])
+def forgetting_curves():
+    """Proposition 4 illustration: fit on the labels collected up to t0, then
+    predict fixed actions at t0 + Delta with no further labels."""
+    stream, cfg = _stream(0), _cfg("stationary")
+    t0 = 700
+    res = run_gateway(stream[:t0], m_product_v1(), np.random.default_rng(0), cfg, t0, t0)
+    pts = [d for d, s in zip(stream[:t0], res.steps) if s.queried]
+    ys = [s.y for s in res.steps if s.queried]
+    acts = {
+        "read_file → workspace_src": ("read_file", 0.40, "bugfix"),
+        "delete_file → ci_config": ("delete_file", 0.65, "ops_maintenance"),
+    }
+    deltas = np.linspace(0, 800, 81)
+    out = {}
+    for kname, k in (("product", ProductKernel(1.6, 1.1, 1.2, 90.0)),
+                     ("additive", AdditiveKernel(1.6, 1.0, 0.6, lam=90.0))):
+        m = LaplaceGPC(k).fit(pack(pts), np.array(ys))
+        for aname, (tool, sens, task) in acts.items():
+            tl = next(t for t in TOOLS if t.name == tool)
+            q = [DecisionPoint(t=int(t0 + dl), tool=tl, target="x", task=task, arg_risk=0,
+                               target_sens=sens).featurize() for dl in deltas]
+            out[(kname, aname)] = m.predict_prob(pack(q))
+            out[("truth", aname)] = np.array([approve_prob(d, cfg) for d in q])
+    return deltas, out, list(acts)
+
+
+def fig_forgetting(path):
+    deltas, out, acts = forgetting_curves()
+    fig, ax = plt.subplots(figsize=(6.4, 3.8))
+    ax.axhspan(SYMMETRIC.tau_low, SYMMETRIC.tau_high, color="#F59E0B", alpha=0.15,
+               label="ASK band (0.35, 0.65)")
+    for aname, ls in zip(acts, ("-", "--")):
+        ax.plot(deltas, out[("product", aname)], color=C_V1, ls=ls, lw=2,
+                label=f"product: {aname}")
+        ax.plot(deltas, out[("additive", aname)], color=C_V2, ls=ls, lw=2,
+                label=f"additive: {aname}")
     ax.set_ylim(0, 1)
-    ax.axhline(0.5, color="k", ls=":", lw=1, label="chance")
-    ax.set_ylabel("decision accuracy on held-out\n"
-                  f"({HELD_TOOL} -> {HELD_TARGET})")
-    ax.set_title("Correlated generalization to an unqueried\n"
-                 "action-context combination (Section 7)")
-    ax.legend(fontsize=8)
+    ax.set_xlabel(r"steps $\Delta$ since the last label")
+    ax.set_ylabel(r"predicted approval $\hat p$")
+    ax.legend(loc="lower right", fontsize=7)
     fig.tight_layout()
-    fig.savefig(path, dpi=300)
+    fig.savefig(path)
     plt.close(fig)
+    return deltas, out, acts
 
 
-def fig_policy_surface(model, cfg, path):
-    """Heatmaps of oracle vs learned approval over (action risk x time),
-    visualizing how the policy partitions the space and tracks the drift."""
-    tool = next(t for t in TOOLS if t.name == "execute_sql")
-    sens = np.linspace(0.0, 1.0, 60)
-    times = np.linspace(0, N - 1, 60)
-    P_true = np.zeros((len(times), len(sens)))
-    P_hat = np.zeros((len(times), len(sens)))
-    from .kernel import pack
-
-    for i, tt in enumerate(times):
-        dps = []
-        for j, sv in enumerate(sens):
-            dp = DecisionPoint(
-                t=int(tt), tool=tool, target="grid", task="data_migration",
-                arg_risk=0, target_sens=float(sv),
-            ).featurize()
-            dps.append(dp)
-            P_true[i, j] = approve_prob(dp, cfg)
-        P_hat[i, :] = model.predict_prob(pack(dps))
-
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.4), sharey=True)
-    for ax, Z, ttl in (
-        (axes[0], P_true, "ground-truth oracle $\\Phi(f^*)$"),
-        (axes[1], P_hat, "learned gateway $\\hat p$"),
-    ):
-        im = ax.imshow(
-            Z, origin="lower", aspect="auto", vmin=0, vmax=1,
-            extent=[sens[0], sens[-1], times[0], times[-1]], cmap="RdYlGn",
-        )
-        ax.contour(sens, times, Z, levels=[0.35, 0.65], colors="k",
-                   linewidths=0.8, linestyles=["--", "-"])
-        ax.axhline(CHANGEPOINT, color="blue", ls=":", lw=1)
-        ax.set_xlabel("target sensitivity (action risk) ->")
-        ax.set_title(ttl)
-    axes[0].set_ylabel("decision point t")
-    fig.colorbar(im, ax=axes, shrink=0.85, label="approval probability")
-    fig.suptitle("How the policy changes: ASK band (between 0.35/0.65 "
-                 "contours) narrows and shifts with accumulated trust "
-                 "(execute_sql, data_migration)")
-    fig.savefig(path, dpi=300, bbox_inches="tight")
+def fig_transfer(hold, path):
+    models = ["per-tool", "per-cell", "product-v1", "linear-EB", "additive"]
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3.6))
+    for ax, hname in zip(axes, ("benign", "dangerous")):
+        acc = []
+        fa = []
+        for m in models:
+            rows = [hold[(m, hname, s)] for s in SEEDS]
+            n = sum(r["n"] for r in rows)
+            acc.append(sum(r["correct_auto"] for r in rows) / max(n, 1))
+            fa.append(sum(r["false_allow"] for r in rows) / max(sum(r["n_deny"] for r in rows), 1))
+        x = np.arange(len(models))
+        ax.bar(x - 0.2, acc, 0.4, color=C_V2, label="correct auto-decision")
+        ax.bar(x + 0.2, fa, 0.4, color=C_REF, label="false-allow (of oracle denials)")
+        ax.set_xticks(x)
+        ax.set_xticklabels([m.replace("-EB", "") for m in models], fontsize=8, rotation=15)
+        tool, target = HOLDOUTS[hname]
+        ax.set_title(f"{hname}: {tool} → {target} (never labelled)", fontsize=9)
+        ax.set_ylim(0, 1)
+    axes[0].legend(fontsize=8, loc="upper left")
+    fig.tight_layout()
+    fig.savefig(path)
     plt.close(fig)
 
 
 # --------------------------------------------------------------------------- #
-# Report
+# Report and LaTeX macros
 # --------------------------------------------------------------------------- #
-def _fmt(pair, pct=False):
-    m, s = pair
-    if np.isnan(m):
-        return "n/a"
-    if pct:
-        return f"{100*m:.1f}% ± {100*s:.1f}"
-    return f"{m:.3f} ± {s:.3f}"
+def f3(p):
+    return "n/a" if not np.isfinite(p[0]) else f"{p[0]:.3f} ± {p[1]:.3f}"
 
 
-def botorch_crosscheck():
-    """Optional: agreement of an independent BoTorch PairwiseGP (Remark 1)."""
-    try:
-        from .gp_botorch import PairwiseGPC, botorch_available
-
-        if not botorch_available():
-            return None
-    except Exception:
-        return None
-    try:
-        stream = make_stream(N, seed=1000)
-        cfg = _cfg()
-        res_b = run_gateway(
-            stream, PairwiseGPC(t_scale=float(N)),
-            np.random.default_rng(0), cfg, T1, T2, query_strategy="active",
-            refit_every=40,
-        )
-        return phase_metrics(res_b, "test")
-    except Exception as e:  # pragma: no cover
-        return {"error": str(e)}
+def pct(p, nd=1):
+    return "n/a" if not np.isfinite(p[0]) else f"{100 * p[0]:.{nd}f}"
 
 
-def write_report(summary, keep):
-    a = summary["agg"]
-    bc = botorch_crosscheck()
-    lines = []
-    W = lines.append
-    W("# Progressive Autonomy as Preference Learning: Experiment Report\n")
-    W("Generated by `uv run python -m experiment.run`. "
-      f"{len(SEEDS)} seeds, stream length N={N}.\n")
+def agg_main(main, model, costs, eps, key, phase="scored"):
+    vals = []
+    for s in SEEDS:
+        r = main[(model, costs, eps, s)]
+        v = r[phase].get(key) if phase else r.get(key)
+        vals.append(v)
+    return ms(vals)
 
-    W("## What this experiment is\n")
-    W("A controlled simulation with a known ground-truth risk-tolerance "
-      "oracle (`experiment/oracle.py`) that *is* the manuscript's generative "
-      "model (Definition 1, Sections 4-6). This is the standard evaluation "
-      "protocol for Preferential Bayesian Optimization. It shows the "
-      "inference, acquisition, correlated generalization and drift-tracking "
-      "behave as the manuscript claims. It is not a validation on real human "
-      "approval data; see Limitations.\n")
 
-    W("## Setup\n")
-    W(f"- Action space: {len(TOOLS)} agent tools with interpretable "
-      "decision-time risk attributes (reversibility, base sensitivity, blast "
-      "radius, destructive-argument flag); 8 target-resource sensitivity "
-      f"tiers; {len(TASKS)} task contexts.\n")
-    W("- Oracle: probit approval `Pr(y=1)=Phi(f*)`, with `f*` = static "
-      "action acceptability + accumulated trust (saturating, Section 6) "
-      "+ a three-way safety veto (irreversible AND sensitive AND low-trust) "
-      f"+ task offset. Abrupt trust changepoint at t={CHANGEPOINT}.\n")
-    W("- Gateway: Laplace GP-probit (Rasmussen & Williams Alg. 3.1/3.2) with "
-      "the Section 4 product kernel `k_tool * k_ctx * k_time`; three-tier "
-      "ALLOW/ASK/BLOCK rule; ASK is the acquisition.\n")
-    W(f"- Prequential phases: learn `[0,{T1})`, val `[{T1},{T2})` "
-      "(thresholds tuned once here under a tightened false-allow cap), test "
-      f"`[{T2},{N})` (thresholds frozen, model keeps adapting online; every "
-      "decision scored before any label at that step).\n")
+def _write_table(path: str, name: str, rows: list[str]) -> None:
+    """Write table rows as a macro: a bare \\input inside a tabular breaks the
+    following \\bottomrule, a macro expands cleanly."""
+    with open(path, "w") as fh:
+        fh.write(f"% Generated by experiment/run.py; do not edit.\n\\newcommand{{\\{name}}}{{%\n")
+        fh.write("\n".join(rows) + "\n}\n")
 
-    W("\n## Results (mean ± std over seeds)\n")
-    W("The headline phase is **val**: it is a fair evaluation of what the "
-      "gateway learned and the Section 6 changepoint falls inside it. "
-      "**test** is a prequential stress phase: the *policy* (tuned "
-      "thresholds) is frozen while the model keeps adapting online, "
-      f"scored ~{N - T2} steps after the t={CHANGEPOINT} trust changepoint. "
-      "The model is never frozen (Section 6 is continual adaptation; "
-      "freezing it degenerates). The contrast is GP gateway vs the "
-      "Independent no-correlation baseline (Section 7); the always-escalate "
-      "status quo is in the headline section below and random query is the "
-      "acquisition probe further down.\n")
 
-    def block(ph: str, title: str):
-        d = a[ph]
-        W(f"\n**{title}**\n")
-        W("| Metric | GP gateway (ours) | Independent (no correlation) |")
-        W("|---|---|---|")
-        W(f"| Auto-decision accuracy | {_fmt(d['gp']['accuracy_auto'])} | "
-          f"{_fmt(d['ind']['accuracy_auto'])} |")
-        W("| False-allow rate (safety) | "
-          f"{_fmt(d['gp']['false_allow_rate'])} | "
-          f"{_fmt(d['ind']['false_allow_rate'])} |")
-        W(f"| Auto-decided fraction | {_fmt(d['gp']['auto_rate'])} | "
-          f"{_fmt(d['ind']['auto_rate'])} |")
-        W(f"| ASK / escalation rate | {_fmt(d['gp']['ask_rate'])} | "
-          f"{_fmt(d['ind']['ask_rate'])} |")
-        W("| prob-RMSE (vs true Phi(f*)) | "
-          f"{_fmt(d['gp']['prob_rmse'])} | {_fmt(d['ind']['prob_rmse'])} |")
-        W(f"| ECE (vs true prob) | {_fmt(d['gp']['ece'])} | "
-          f"{_fmt(d['ind']['ece'])} |")
+def pooled_veto(main, model, costs, eps) -> tuple[int, int]:
+    """Veto-window ALLOWs pooled over seeds (the window holds only a few actions
+    per seed, so per-seed rates are too noisy to average)."""
+    k = n = 0
+    for s in SEEDS:
+        r = main[(model, costs, eps, s)]
+        if r["veto_n"]:
+            k += int(round(r["veto_allow"] * r["veto_n"]))
+            n += r["veto_n"]
+    return k, n
 
-    block("val", "Validation phase (headline)")
-    block("test", "Test phase (prequential, post-changepoint stress)")
-    W("\nThreshold note: the manuscript's operating point is described as "
-      "*emergent* under a fixed rule. With finite data the Laplace-probit "
-      "posterior is underconfident at the kernel-far tail, so we realize that "
-      "operating point operationally by tuning `(tau_low, tau_high)` once on "
-      "val (smallest ASK band under a tightened false-allow cap). This is "
-      "val-tuning, not per-seed fitting; the test phase never re-tunes.\n")
 
-    qg = summary["nq"]["gp"]
-    qe = summary["nq"]["escalate"]
-    ratio = qe[0] / max(qg[0], 1.0)
-    W("\n## Human-burden reduction (headline, Section 1)\n")
-    W("The status-quo baseline is **always-escalate**: every action is sent "
-      "to the human (no automation). The manuscript's central promise is "
-      "delivering most decisions automatically and safely at a fraction of "
-      "that human cost.\n")
-    W(f"- Human queries over the scored phases (val+test): gateway "
-      f"**{_fmt(qg)}** vs always-escalate {_fmt(qe)}, a "
-      f"**~{ratio:.1f}x reduction** in human interruptions. "
-      "`figures/query_savings.pdf` shows the full-stream cumulative "
-      "trajectory for one seed (the larger gap there includes the learn "
-      "phase, where the cold-start gateway escalates heavily by design).\n")
-    va = a["val"]
-    W(f"- At that cost the gateway auto-decides "
-      f"{_fmt(va['gp']['auto_rate'])} of actions at "
-      f"{_fmt(va['gp']['accuracy_auto'])} accuracy with a "
-      f"{_fmt(va['gp']['false_allow_rate'])} false-allow rate (val). "
-      "Always-escalate has 0 automation by construction. See "
-      "`figures/query_savings.pdf`.\n")
+def pv(main, model, costs, eps) -> str:
+    k, n = pooled_veto(main, model, costs, eps)
+    return f"{k}/{n}"
 
-    bg, br = summary["bnd"]["gp"], summary["bnd"]["rand"]
-    abl = summary["ablation"]
-    sa, sr = abl["stationary"]
-    ca, cr = abl["changepoint"]
-    W("\n## Acquisition probe: ASK-band vs random query (Section 5)\n")
-    W("This is a methodological probe, not the headline. At a matched "
-      "full-stream query budget, prequential boundary-decision accuracy "
-      "(points whose true approval probability is in [0.15, 0.85]): "
-      f"ASK-band acquisition {_fmt(bg, pct=True)} vs random query "
-      f"{_fmt(br, pct=True)}.\n")
-    W("**Honest finding:** uncertainty-targeted querying does *not* beat "
-      "random here. An ablation turns the Section 6 changepoint off and on "
-      "(5 seeds, matched budget, prequential boundary accuracy):\n")
-    W("| Oracle | ASK-band active | Random query | Gap (active - random) |")
-    W("|---|---|---|---|")
-    W(f"| stationary (no changepoint) | {100*sa:.1f}% | {100*sr:.1f}% | "
-      f"{100*(sa-sr):+.1f} pp |")
-    W(f"| with Section 6 changepoint | {100*ca:.1f}% | {100*cr:.1f}% | "
-      f"{100*(ca-cr):+.1f} pp |")
-    W("\nThe gap is non-positive in *both* regimes, including with a fully "
-      "stationary target. The deficit is therefore not caused by "
-      "non-stationarity: it is the generic behaviour of pure uncertainty "
-      "sampling under class imbalance -- once the posterior is confident in "
-      "a region that region leaves the ASK band and is never re-probed, so "
-      "its estimate is never refreshed, and a silent tolerance reset there "
-      "goes undetected. `k_time` down-weights stale evidence but does not "
-      "itself generate new probes. (The per-condition magnitude is small and "
-      "seed-noisy; the robust finding is the consistently non-positive sign, "
-      "not which regime is worse.) So Section 5's ASK-band rule, taken "
-      "literally, is not a sample-efficiency win in this setting. This is "
-      "surfaced, not tuned away; a recency-aware or information-theoretic "
-      "acquisition rule (epsilon-exploration or BALD/EVOI with a forgetting "
-      "term) is the natural remedy and is a manuscript-level choice left to "
-      "the author.\n")
 
-    tg, ti = summary["transfer"]["gp"], summary["transfer"]["ind"]
-    W("\n## Correlated generalization (Section 7)\n")
-    W(f"Held-out combination `{HELD_TOOL} -> {HELD_TARGET}` (a benign "
-      "combination with many queried neighbours) was never queried. "
-      "Decision accuracy there, by pure kernel extrapolation: "
-      f"**GP {_fmt(tg, pct=True)}** vs Independent {_fmt(ti, pct=True)} "
-      "(chance 50%). This isolates the kernel: the GP transfers evidence "
-      "from similar tools/targets; the per-tool baseline cannot.\n")
+def write_outputs(main, acq, hold, forget):
+    os.makedirs(GENDIR, exist_ok=True)
+    L = []
+    W = L.append
+    macros = {}
 
-    W("\n## Claim -> evidence map\n")
-    W("| Manuscript claim | Status | Evidence |")
+    def mac(name, value):
+        macros[name] = value
+
+    W("# Progressive Autonomy as Preference Learning: Experiment Report (v2)\n")
+    W(f"Generated by `uv run python -m experiment.run`. Stream length N={N}; "
+      f"{len(SEEDS)} seeds for the main tables, {len(ACQ_SEEDS)} paired seeds for the "
+      "acquisition probe. Every number below is recomputed from the code; nothing is "
+      "tuned on labels.\n")
+    W("## Protocol\n")
+    W(f"- Oracle: probit approval `Phi(f*)`, `f*` = static action acceptability + saturating "
+      f"trust with an abrupt reset at t={CHANGEPOINT} + a three-way veto (irreversible AND "
+      "sensitive AND low trust) + task offset (`experiment/oracle.py`).")
+    W(f"- Phases: warm-up `[0,{T_WARM})` (not scored); scored early `[{T_WARM},{T_LATE})` "
+      f"(contains the changepoint) and late `[{T_LATE},{N})`. Prequential: every decision is "
+      "logged before any label at that step exists.")
+    W(f"- Thresholds from Chow costs (Proposition 2). Symmetric: c_FA=c_FB={SYMMETRIC.c_fa:.3f}, "
+      f"c_ask=1, band {tuple(round(x, 3) for x in SYMMETRIC.band)} (the v1 band). Safety-weighted: "
+      f"c_FA={SAFETY.c_fa:g}, c_FB={SAFETY.c_fb:g}, c_ask=1, band "
+      f"{tuple(round(x, 3) for x in SAFETY.band)}.")
+    W("- Regret = mean Chow loss of the gateway's decisions minus that of the oracle policy "
+      "that knows `Phi(f*)`, in units of one escalation.")
+    W("- Hyperparameters: `l_tool=1.1`, `l_ctx=1.2` throughout. v1 product: σ²=1.6, λ=90. "
+      "v2 additive (pre-registered in the v1 review before any v2 run): σs²=1.6, σg²=1.0, "
+      f"σd²=0.6, λ=90. Evidence-selected (EB) models re-select by Laplace marginal likelihood "
+      f"every 64 labels over: product σ²∈{{1.6,3.2}} × λ∈{{60,120,240,480,960}}; additive "
+      f"splits {ADD_SPLITS} × λ∈{{60,120,240,480}}; linear λ∈{{60,120,240,480}}.\n")
+
+    # ---- main table (symmetric, no audits) -----------------------------------
+    W("## Main comparison (symmetric costs, no audits; scored phases)\n")
+    W("| Model | ASK | Auto acc. | False-allow | ECE | Regret | Labels/action | Veto-window ALLOW (pooled) |")
+    W("|---|---|---|---|---|---|---|---|")
+    rows_tex = []
+    for m in MODELS:
+        g = lambda k, ph="scored": agg_main(main, m, "symmetric", 0.0, k, ph)  # noqa: E731
+        W(f"| {m} | {f3(g('ask_rate'))} | {f3(g('accuracy_auto'))} | {f3(g('false_allow_rate'))} "
+          f"| {f3(g('ece'))} | {f3(g('regret'))} | {f3(g('labels_per_action', None))} "
+          f"| {pv(main, m, 'symmetric', 0.0)} |")
+        rows_tex.append(
+            f"{LABELS[m]} & {g('regret')[0]:.3f} & {pct(g('ask_rate'))} & {pct(g('accuracy_auto'))} & "
+            f"{pct(g('false_allow_rate'))} & {g('ece')[0]:.3f} & "
+            f"{pv(main, m, 'symmetric', 0.0)} \\\\")
+    floor_sym = agg_main(main, "additive", "symmetric", 0.0, "floor_ask")
+    floor_safe = agg_main(main, "additive", "safety", 0.0, "floor_ask")
+    W(f"\nPerfect-posterior escalation floor (Proposition 3): symmetric band "
+      f"{pct(floor_sym)}%, safety band {pct(floor_safe)}%.\n")
+    _write_table(os.path.join(GENDIR, "table_main.tex"), "TabMain", rows_tex)
+
+    for m, key in (("product-v1", "V"), ("additive", "A"), ("linear-EB", "L"),
+                   ("product-EB", "PE"), ("additive-EB", "AE"), ("per-tool", "T"),
+                   ("per-cell", "C")):
+        for k, name in (("ask_rate", "Ask"), ("accuracy_auto", "Acc"), ("false_allow_rate", "FA"),
+                        ("ece", "Ece"), ("regret", "Regret")):
+            v = agg_main(main, m, "symmetric", 0.0, k)
+            mac(f"res{key}{name}", f"{100 * v[0]:.1f}" if name not in ("Ece", "Regret")
+                else f"{v[0]:.3f}")
+        mac(f"res{key}Veto", pv(main, m, "symmetric", 0.0))
+        mac(f"res{key}Labels",
+            f"{100 * agg_main(main, m, 'symmetric', 0.0, 'labels_per_action', None)[0]:.1f}")
+        mac(f"res{key}AskLate",
+            f"{100 * agg_main(main, m, 'symmetric', 0.0, 'ask_rate', 'late')[0]:.1f}")
+    mac("resFloorSym", f"{100 * floor_sym[0]:.1f}")
+    rv = agg_main(main, "product-v1", "symmetric", 0.0, "regret")[0]
+    ra = agg_main(main, "additive", "symmetric", 0.0, "regret")[0]
+    mac("resRegretCut", f"{100 * (1 - ra / rv):.0f}")
+    mac("resFloorSafe", f"{100 * floor_safe[0]:.1f}")
+    for m, key in (("product-v1", "V"), ("additive", "A")):
+        lpa = agg_main(main, m, "symmetric", 0.0, "labels_per_action", None)[0]
+        mac(f"res{key}Burden", f"{1 / lpa:.1f}")
+    sel = [main[("additive-EB", "symmetric", 0.0, s)]["selected"] for s in SEEDS]
+    W("Final kernel chosen by evidence (additive-EB, per seed): " + "; ".join(map(str, sel)) + "\n")
+    sel = [main[("product-EB", "symmetric", 0.0, s)]["selected"] for s in SEEDS]
+    W("Final kernel chosen by evidence (product-EB, per seed): " + "; ".join(map(str, sel)) + "\n")
+
+    # ---- phase split -------------------------------------------------------
+    W("\n## Early (contains changepoint) vs late phase, symmetric costs\n")
+    W("| Model | ASK early | ASK late | Acc early | Acc late | Regret early | Regret late |")
+    W("|---|---|---|---|---|---|---|")
+    for m in GP_MODELS:
+        g = lambda k, ph: agg_main(main, m, "symmetric", 0.0, k, ph)  # noqa: E731
+        W(f"| {m} | {f3(g('ask_rate', 'early'))} | {f3(g('ask_rate', 'late'))} | "
+          f"{f3(g('accuracy_auto', 'early'))} | {f3(g('accuracy_auto', 'late'))} | "
+          f"{f3(g('regret', 'early'))} | {f3(g('regret', 'late'))} |")
+
+    # ---- safety-weighted ---------------------------------------------------
+    W("\n## Safety-weighted costs (band (0.25, 0.90)), no audits\n")
+    W("| Model | ASK | Auto acc. | False-allow | Regret | Veto-window ALLOW (pooled) |")
+    W("|---|---|---|---|---|---|")
+    rows_tex = []
+    for m in GP_MODELS:
+        g = lambda k, ph="scored": agg_main(main, m, "safety", 0.0, k, ph)  # noqa: E731
+        W(f"| {m} | {f3(g('ask_rate'))} | {f3(g('accuracy_auto'))} | {f3(g('false_allow_rate'))} "
+          f"| {f3(g('regret'))} | {pv(main, m, 'safety', 0.0)} |")
+        rows_tex.append(f"{LABELS[m]} & {pct(g('ask_rate'))} & {pct(g('accuracy_auto'))} & "
+                        f"{g('regret')[0]:.3f} \\\\")
+    _write_table(os.path.join(GENDIR, "table_safety.tex"), "TabSafety", rows_tex)
+    for m, key in (("product-v1", "V"), ("additive", "A"), ("linear-EB", "L")):
+        mac(f"resSafe{key}Ask", f"{100 * agg_main(main, m, 'safety', 0.0, 'ask_rate')[0]:.1f}")
+        mac(f"resSafe{key}Regret", f"{agg_main(main, m, 'safety', 0.0, 'regret')[0]:.3f}")
+
+    # ---- audits ------------------------------------------------------------
+    W(f"\n## Random audits (ε={AUDIT_EPS} of auto-decided actions), symmetric costs\n")
+    W("The Horvitz-Thompson estimate k/(ε N_allow) is the unbiased estimator of Proposition 5 "
+      "(`lean/TrustCalib/Audit.lean`); the Jeffreys interval is on the audited fraction k/n "
+      "(the Hájek ratio), which is consistent but not the object of the theorem.\n")
+    W("| Model | Labels/action | Regret | Veto-window ALLOW (pooled) | HT realized-FA estimate | Truth | "
+      "Jeffreys 95% (on k/n) covers truth |")
+    W("|---|---|---|---|---|---|---|")
+    rows_tex = []
+    for m in ("product-v1", "linear-EB", "additive", "additive-EB"):
+        g = lambda k, ph="scored": agg_main(main, m, "symmetric", AUDIT_EPS, k, ph)  # noqa: E731
+        aud = [main[(m, "symmetric", AUDIT_EPS, s)]["audit"] for s in SEEDS]
+        est = ms([a["ipw_estimate"] for a in aud])
+        tru = ms([a["truth"] for a in aud])
+        cov = np.mean([a["jeffreys_lo"] <= a["truth"] <= a["jeffreys_hi"] for a in aud])
+        g0 = lambda k, ph="scored": agg_main(main, m, "symmetric", 0.0, k, ph)  # noqa: E731
+        W(f"| {m} | {f3(g('labels_per_action', None))} | {f3(g('regret'))} | "
+          f"{pv(main, m, 'symmetric', AUDIT_EPS)} (no audit: {pv(main, m, 'symmetric', 0.0)}) | {f3(est)} | "
+          f"{f3(tru)} | {100 * cov:.0f}% |")
+        rows_tex.append(
+            f"{LABELS[m]} & {pct(g0('labels_per_action', None))} $\\to$ {pct(g('labels_per_action', None))} & "
+            f"{g0('regret')[0]:.3f} $\\to$ {g('regret')[0]:.3f} & "
+            f"{pv(main, m, 'symmetric', 0.0)} $\\to$ {pv(main, m, 'symmetric', AUDIT_EPS)} & "
+            f"{100 * est[0]:.1f} / {100 * tru[0]:.1f} & {100 * cov:.0f}\\% \\\\")
+    _write_table(os.path.join(GENDIR, "table_audit.tex"), "TabAudit", rows_tex)
+    for m, key in (("product-v1", "V"), ("additive", "A"), ("linear-EB", "L")):
+        mac(f"resAud{key}Veto", pv(main, m, "symmetric", AUDIT_EPS))
+        mac(f"resAud{key}Regret", f"{agg_main(main, m, 'symmetric', AUDIT_EPS, 'regret')[0]:.3f}")
+        mac(f"resAud{key}Labels",
+            f"{100 * agg_main(main, m, 'symmetric', AUDIT_EPS, 'labels_per_action', None)[0]:.1f}")
+        aud = [main[(m, "symmetric", AUDIT_EPS, s)]["audit"] for s in SEEDS]
+        mac(f"resAud{key}Est", f"{100 * np.mean([a['ipw_estimate'] for a in aud]):.1f}")
+        mac(f"resAud{key}Truth", f"{100 * np.mean([a['truth'] for a in aud]):.1f}")
+        mac(f"resAud{key}Cover",
+            f"{100 * np.mean([a['jeffreys_lo'] <= a['truth'] <= a['jeffreys_hi'] for a in aud]):.0f}")
+
+    # ---- acquisition -------------------------------------------------------
+    W("\n## Acquisition probe (matched budget, prequential boundary accuracy, paired seeds)\n")
+    W("| Kernel | Oracle | Band | Random | BALD | Band − random (SE, wins) | "
+      "BALD − random (SE, wins) |")
+    W("|---|---|---|---|---|---|---|")
+    rows_tex = []
+    for kern in ("product-v1", "additive"):
+        for orc in ("stationary", "changepoint"):
+            rs = [acq[(kern, orc, s)] for s in ACQ_SEEDS]
+            b = [r["band"] for r in rs]
+            r_ = [r["random"] for r in rs]
+            bd = [r["bald"] for r in rs]
+            d1, d2 = paired(b, r_), paired(bd, r_)
+            W(f"| {kern} | {orc} | {np.mean(b):.3f} | {np.mean(r_):.3f} | {np.mean(bd):.3f} | "
+              f"{100 * d1[0]:+.1f} pp ({100 * d1[1]:.1f}, {d1[2]}/{d1[3]}) | "
+              f"{100 * d2[0]:+.1f} pp ({100 * d2[1]:.1f}, {d2[2]}/{d2[3]}) |")
+            rows_tex.append(
+                f"{LABELS[kern]} & {orc} & {100 * np.mean(b):.1f} & {100 * np.mean(r_):.1f} & "
+                f"{100 * np.mean(bd):.1f} & ${100 * d1[0]:+.1f} \\pm {100 * d1[1]:.1f}$ & "
+                f"${100 * d2[0]:+.1f} \\pm {100 * d2[1]:.1f}$ \\\\")
+            key = ("V" if kern == "product-v1" else "A") + ("S" if orc == "stationary" else "C")
+            mac(f"resAcq{key}Gap", f"{100 * d1[0]:+.1f}")
+            mac(f"resAcq{key}Se", f"{100 * d1[1]:.1f}")
+            mac(f"resAcq{key}BaldGap", f"{100 * d2[0]:+.1f}")
+            mac(f"resAcq{key}BaldSe", f"{100 * d2[1]:.1f}")
+    _write_table(os.path.join(GENDIR, "table_acq.tex"), "TabAcq", rows_tex)
+
+    W("\nWhere labels go (changepoint oracle, scored phases, mean over seeds):\n")
+    W("| Kernel | Strategy | Labels | Share on ambiguous actions (q∈[.35,.65]) | Mean latent var "
+      "| Mean abs(mu) | Mean BALD (bits) |")
+    W("|---|---|---|---|---|---|---|")
+    for kern in ("product-v1", "additive"):
+        rs = [acq[(kern, "changepoint", s)] for s in ACQ_SEEDS]
+        for strat in ("band", "random", "bald"):
+            pl = [r[f"place_{strat}"] for r in rs if r[f"place_{strat}"]]
+            W(f"| {kern} | {strat} | {np.mean([p['n'] for p in pl]):.0f} | "
+              f"{np.mean([p['ambiguous_share'] for p in pl]):.3f} | "
+              f"{np.mean([p['mean_var'] for p in pl]):.3f} | "
+              f"{np.mean([p['mean_abs_mu'] for p in pl]):.3f} | "
+              f"{np.mean([p['mean_bald'] for p in pl]):.3f} |")
+            if kern == "product-v1":
+                mac(f"resPlace{strat.capitalize()}Amb",
+                    f"{100 * np.mean([p['ambiguous_share'] for p in pl]):.1f}")
+                mac(f"resPlace{strat.capitalize()}Var", f"{np.mean([p['mean_var'] for p in pl]):.2f}")
+    stream_q = np.concatenate([[approve_prob(d, _cfg()) for d in _stream(s)][T_WARM:]
+                               for s in ACQ_SEEDS])
+    base = float(np.mean((stream_q >= 0.35) & (stream_q <= 0.65)))
+    W(f"\nBase rate of ambiguous actions in the scored stream: {base:.3f}.\n")
+    mac("resPlaceBaseAmb", f"{100 * base:.1f}")
+
+    # ---- hold-outs ---------------------------------------------------------
+    W("\n## Held-out combinations (never labelled; prequential decisions in scored phases)\n")
+    W("| Model | Hold-out | Actions | Oracle denials | False-allow | ASK share | Correct auto |")
+    W("|---|---|---|---|---|---|---|")
+    for hname in ("benign", "dangerous"):
+        for m in ("per-tool", "per-cell", "product-v1", "linear-EB", "additive"):
+            rs = [hold[(m, hname, s)] for s in SEEDS]
+            n = sum(r["n"] for r in rs)
+            nd = sum(r["n_deny"] for r in rs)
+            fa = sum(r["false_allow"] for r in rs)
+            W(f"| {m} | {hname} | {n} | {nd} | {fa} | {sum(r['ask'] for r in rs) / max(n, 1):.2f} "
+              f"| {sum(r['correct_auto'] for r in rs) / max(n, 1):.2f} |")
+            key = {"product-v1": "V", "additive": "A", "linear-EB": "L", "per-tool": "T",
+                   "per-cell": "C"}[m] + ("D" if hname == "dangerous" else "B")
+            mac(f"resHold{key}FA", str(fa))
+            mac(f"resHold{key}Deny", str(nd))
+            mac(f"resHold{key}Correct", f"{100 * sum(r['correct_auto'] for r in rs) / max(n, 1):.0f}")
+
+    # ---- evidence ranking --------------------------------------------------
+    W("\n## Laplace log marginal likelihood on the labels the v1 gateway collected\n")
+    W("The labelled set was selected by the v1 policy (escalated actions only), so this is "
+      "evidence under a selected design, not on a random sample of the stream.\n")
+    ev = [main[("product-v1", "symmetric", 0.0, s)]["_evidence"] for s in SEEDS]
+    names = list(ev[0])
+    W("| Kernel | Mean log evidence | Best in # seeds |")
     W("|---|---|---|")
-    W("| ASK band narrows as posterior concentrates (Sec. 5) | supported | "
-      "`figures/policy_evolution.pdf` |")
-    va_ar = va["gp"]["auto_rate"][0]
-    W(f"| Auto-approve rises toward the 85-90% target (Sec. 5) | partial "
-      f"(rises substantially; val auto-rate ~{100*va_ar:.0f}%, below the "
-      "85-90% band) | `figures/auto_vs_query.pdf` |")
-    W("| Large human-burden reduction vs status quo (Sec. 1) | supported | "
-      "`figures/query_savings.pdf` + headline |")
-    W("| Correlated generalization beats independent (Sec. 7) | supported | "
-      "`figures/transfer.pdf` + table |")
-    W("| Posterior tracks non-stationary drift (Sec. 6) | supported | "
-      "`figures/drift_tracking.pdf` |")
-    W("| Calibrated approval probabilities | partial (underconfident "
-      "tail) | `figures/calibration.pdf`, ECE above |")
-    W("| ASK-band querying is sample-efficient vs random (Sec. 5) | "
-      "**not supported** (deficit present even with a stationary target; "
-      "not caused by drift) | acquisition probe above |")
-    W("| Policy partitions (risk x time) into allow/ask/block | supported | "
-      "`figures/policy_surface.pdf` |")
+    for k in names:
+        wins = sum(1 for e in ev if max(e, key=e.get) == k)
+        W(f"| {k} | {np.mean([e[k] for e in ev]):.1f} | {wins}/{len(ev)} |")
+    mac("resEvV", f"{np.mean([e['product λ=90 (v1)'] for e in ev]):.1f}")
+    mac("resEvA", f"{np.mean([e['additive λ=90 (v2)'] for e in ev]):.1f}")
+    mac("resEvAWins", str(sum(1 for e in ev if max(e, key=e.get) == 'additive λ=90 (v2)')))
+    mac("resEvLWins", str(sum(1 for e in ev if max(e, key=e.get) == 'linear+drift λ=90')))
 
-    W("\n## BoTorch PairwiseGP cross-check (Remark 1)\n")
-    if bc is None:
-        W("BoTorch not installed; skipped. Install with "
-          "`uv sync --extra botorch` to reproduce. The self-contained "
-          "Laplace GP-probit is the primary engine; this cross-check only "
-          "tests that an independent maintained PBO implementation, fed the "
-          "unary-as-pairwise-vs-reference encoding of Remark 1, agrees on "
-          "the trend.\n")
-    elif "error" in bc:
-        W(f"BoTorch present but the cross-check raised: `{bc['error']}`.\n")
-    else:
-        W("Independent BoTorch `PairwiseGP` (probit comparison likelihood, "
-          "Laplace; carries comparison noise) on the same stream, test "
-          f"phase: auto-accuracy {bc['accuracy_auto']:.3f}, false-allow "
-          f"{bc['false_allow_rate']:.3f}. Same qualitative behaviour as the "
-          "self-contained engine, supporting Remark 1.\n")
+    # ---- forgetting ---------------------------------------------------------
+    deltas, out, acts = forget
+    W("\n## Forgetting (Proposition 4): fixed training set, predictions Δ steps later\n")
+    W("| Action | Kernel | p̂ at Δ=0 | Δ=200 | Δ=800 | truth |")
+    W("|---|---|---|---|---|---|")
+    i200 = int(np.argmin(np.abs(deltas - 200)))
+    for a in acts:
+        for kname in ("product", "additive"):
+            v = out[(kname, a)]
+            W(f"| {a} | {kname} | {v[0]:.3f} | {v[i200]:.3f} | {v[-1]:.3f} | {out[('truth', a)][0]:.3f} |")
+    mac("resForgetProdEnd", f"{out[('product', acts[0])][-1]:.2f}")
+    mac("resForgetAddEnd", f"{out[('additive', acts[0])][-1]:.2f}")
+    mac("resForgetStart", f"{out[('product', acts[0])][0]:.2f}")
+
+    W("\n## Claim → evidence map\n")
+    W("| Claim | Status | Evidence |")
+    W("|---|---|---|")
+    W("| Three-tier rule is Bayes-optimal under Chow costs (Prop. 2) | proved | `lean/TrustCalib/Chow.lean` |")
+    W("| Unary feedback identifies the boundary, pairwise does not (Prop. 1) | proved | `lean/TrustCalib/Identifiability.lean` |")
+    W("| Separable time kernel forgets static risk; re-escalation (Prop. 4) | proved + measured | `lean/TrustCalib/Forgetting.lean`, `figures/forgetting.pdf`, test |")
+    W("| Escalation floor is set by the supervisor (Prop. 3) | proved + measured | `lean/TrustCalib/Floor.lean`, floor above |")
+    W("| Audits give unbiased false-allow estimates; certification size (Prop. 5) | proved + measured | `lean/TrustCalib/Audit.lean`, audit table |")
+    W("| Additive kernel reduces burden at matched safety | supported (indicative: oracle is additive by construction) | main table |")
+    W("| Band-as-acquisition fails because of forgetting, not stationarity | supported | acquisition table |")
+    W("| Evidence selection optimizes average fit, not tail safety | observed | veto-window column, hold-outs |")
 
     W("\n## Limitations\n")
-    W("- The headline result is a simulation: the oracle is synthetic by "
-      "necessity. No public dataset tracks one supervisor's per-action "
-      "approve/deny decisions longitudinally as their risk tolerance "
-      "drifts. R-Judge (Yuan et al., EMNLP 2024 Findings) has human "
-      "safe/unsafe labels on agent interactions and is the closest real "
-      "anchor, but it is static and aggregated; it could serve as a "
-      "cold-start prior, not as a test of the Section 6 drift model. "
-      "AgentSec (Zenodo 18369965) records agent provenance but carries no "
-      "human-feedback, risk, or preference labels and is not repurposable "
-      "for this formulation.\n")
-    W("- Determinism/identifiability: the kernel does observe the action "
-      "risk attributes, but never the oracle's time-varying veto "
-      "conjunction or the drift, which it must learn through the data and "
-      "`k_time`.\n")
-
-    W("\n## Reproduce\n")
-    W("```\nuv run python -m experiment.run        # report + figures\n"
-      "uv run pytest                          # correctness tests\n"
-      "uv sync --extra botorch && uv run python -m experiment.run  "
-      "# with cross-check\n```\n")
+    W("- Simulation only; the oracle is synthetic and additive by construction, so the additive "
+      "kernel's advantage is indicative, and a linear probit with the same time structure is "
+      "competitive on average metrics because the oracle's static term is linear in the features.")
+    W("- Veto-window numbers rest on few actions per seed (the veto is active for ~90 steps after "
+      "the reset); read them as directional.")
+    W("- Costs are stated, not elicited; the two operating points bracket plausible choices.")
 
     with open(REPORT, "w") as fh:
-        fh.write("\n".join(lines) + "\n")
+        fh.write("\n".join(L) + "\n")
+    with open(os.path.join(GENDIR, "results.tex"), "w") as fh:
+        fh.write("% Generated by experiment/run.py; do not edit.\n")
+        for k, v in macros.items():
+            fh.write(f"\\newcommand{{\\{k}}}{{{v}}}\n")
 
 
 def main():
     os.makedirs(FIGDIR, exist_ok=True)
-    print("Running seeded experiment ...")
-    summary, keep = run_all_seeds()
-    print("Running acquisition ablation (stationary vs changepoint) ...")
-    summary["ablation"] = acquisition_ablation(seeds=3)
-    print("Running diagnostics (drift + policy surface) ...")
-    _, cfg, res_diag, model_diag, _ = run_diagnostics(0)
+    specs = [(m, "symmetric", 0.0, s) for m in MODELS for s in SEEDS]
+    specs += [(m, "safety", 0.0, s) for m in GP_MODELS for s in SEEDS]
+    specs += [(m, "symmetric", AUDIT_EPS, s)
+              for m in ("product-v1", "linear-EB", "additive", "additive-EB") for s in SEEDS]
+    print(f"main: {len(specs)} runs ...", flush=True)
+    main_res = _pool_map(job_main, specs)
+    acq_specs = [(k, o, s) for k in ("product-v1", "additive") for o in ORACLES for s in ACQ_SEEDS]
+    print(f"acquisition: {len(acq_specs)} paired jobs ...", flush=True)
+    acq = _pool_map(job_acq, acq_specs)
+    hold_specs = [(m, h, s) for m in ("per-tool", "per-cell", "product-v1", "linear-EB", "additive")
+                  for h in HOLDOUTS for s in SEEDS]
+    print(f"hold-outs: {len(hold_specs)} runs ...", flush=True)
+    hold = _pool_map(job_hold, hold_specs)
 
-    fig_policy_evolution(keep["res_gp"], os.path.join(FIGDIR,
-                         "policy_evolution.pdf"))
-    fig_auto_vs_query(keep["res_gp"], os.path.join(FIGDIR,
-                      "auto_vs_query.pdf"))
-    fig_query_savings(keep["res_gp"],
-                      os.path.join(FIGDIR, "query_savings.pdf"))
-    fig_calibration(summary["reliability"],
-                    os.path.join(FIGDIR, "calibration.pdf"))
-    fig_drift(res_diag, os.path.join(FIGDIR, "drift_tracking.pdf"))
-    fig_transfer(summary["transfer"], os.path.join(FIGDIR, "transfer.pdf"))
-    fig_policy_surface(model_diag, cfg,
-                       os.path.join(FIGDIR, "policy_surface.pdf"))
+    print("figures ...", flush=True)
+    fig_policy_evolution(main_res, os.path.join(FIGDIR, "policy_evolution.pdf"))
+    fig_query_savings(main_res, os.path.join(FIGDIR, "query_savings.pdf"))
+    fig_calibration(main_res, os.path.join(FIGDIR, "calibration.pdf"))
+    fig_drift(os.path.join(FIGDIR, "drift_tracking.pdf"))
+    forget = fig_forgetting(os.path.join(FIGDIR, "forgetting.pdf"))
+    fig_transfer(hold, os.path.join(FIGDIR, "transfer.pdf"))
 
-    write_report(summary, keep)
-    print(f"Done. See {REPORT} and {FIGDIR}/")
+    write_outputs(main_res, acq, hold, forget)
+    with open(RESULTS, "w") as fh:
+        json.dump({"main": {"|".join(map(str, k)): _strip(v) for k, v in main_res.items()},
+                   "acq": {"|".join(map(str, k)): v for k, v in acq.items()},
+                   "hold": {"|".join(map(str, k)): v for k, v in hold.items()}},
+                  fh, indent=1, default=float)
+    print(f"Done. See {REPORT}, {FIGDIR}/ and {GENDIR}/", flush=True)
 
 
 if __name__ == "__main__":

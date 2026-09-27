@@ -561,9 +561,11 @@ def write_outputs(main, acq, hold, forget):
     W("The Horvitz-Thompson estimate k/(ε N_allow) is the unbiased estimator of Proposition 5 "
       "(`lean/TrustCalib/Audit.lean`); the Jeffreys interval is on the audited fraction k/n "
       "(the Hájek ratio), which is consistent but not the object of the theorem.\n")
-    W("| Model | Labels/action | Regret | Veto-window ALLOW (pooled) | HT realized-FA estimate | Truth | "
-      "Jeffreys 95% (on k/n) covers truth |")
-    W("|---|---|---|---|---|---|---|")
+    W("Regret charges decisions only, so audits are free in it; the next column bills each audit as "
+      "one escalation, and the break-even is the audit cost at which the two are equal.\n")
+    W("| Model | Labels/action | Regret (audits free) | Regret (audit = 1 escalation) | Break-even audit cost "
+      "| Veto-window ALLOW (pooled) | HT realized-FA estimate | Truth | Jeffreys 95% (on k/n) covers truth |")
+    W("|---|---|---|---|---|---|---|---|---|")
     rows_tex = []
     for m in ("product-v1", "linear-EB", "additive", "additive-EB"):
         g = lambda k, ph="scored": agg_main(main, m, "symmetric", AUDIT_EPS, k, ph)  # noqa: E731
@@ -572,12 +574,17 @@ def write_outputs(main, acq, hold, forget):
         tru = ms([a["truth"] for a in aud])
         cov = np.mean([a["jeffreys_lo"] <= a["truth"] <= a["jeffreys_hi"] for a in aud])
         g0 = lambda k, ph="scored": agg_main(main, m, "symmetric", 0.0, k, ph)  # noqa: E731
-        W(f"| {m} | {f3(g('labels_per_action', None))} | {f3(g('regret'))} | "
+        charged = g('regret_audit_charged')
+        be = (g0('regret')[0] - g('regret')[0]) / max(g('audit_frac')[0], 1e-9)
+        W(f"| {m} | {f3(g('labels_per_action', None))} | {f3(g('regret'))} | {f3(charged)} | {be:.2f} | "
           f"{pv(main, m, 'symmetric', AUDIT_EPS)} (no audit: {pv(main, m, 'symmetric', 0.0)}) | {f3(est)} | "
           f"{f3(tru)} | {100 * cov:.0f}% |")
+        mac_key = {"product-v1": "V", "linear-EB": "L", "additive": "A", "additive-EB": "AE"}[m]
+        mac(f"resAud{mac_key}Charged", f"{charged[0]:.3f}")
+        mac(f"resAud{mac_key}BreakEven", f"{be:.2f}")
         rows_tex.append(
             f"{LABELS[m]} & {pct(g0('labels_per_action', None))} $\\to$ {pct(g('labels_per_action', None))} & "
-            f"{g0('regret')[0]:.3f} $\\to$ {g('regret')[0]:.3f} & "
+            f"{g0('regret')[0]:.3f} $\\to$ {g('regret')[0]:.3f} ({charged[0]:.3f}) & "
             f"{pv(main, m, 'symmetric', 0.0)} $\\to$ {pv(main, m, 'symmetric', AUDIT_EPS)} & "
             f"{100 * est[0]:.1f} / {100 * tru[0]:.1f} & {100 * cov:.0f}\\% \\\\")
     _write_table(os.path.join(GENDIR, "table_audit.tex"), "TabAudit", rows_tex)

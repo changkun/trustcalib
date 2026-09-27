@@ -650,14 +650,16 @@ percentage points $\pm$ paired standard error over 20 seeds.}
 \resizebox{\linewidth}{!}{%
 \begin{tabular}{@{}lccccc@{}}
 \toprule
-\textbf{Model} & \textbf{Labels/action \%} & \textbf{Regret} & \textbf{Veto ALLOW}
+\textbf{Model} & \textbf{Labels/action \%} & \textbf{Regret (audit billed)} & \textbf{Veto ALLOW}
  & \textbf{HT est./truth \%} & \textbf{CI covers} \\
 \midrule
 \TabAudit
 \bottomrule
 \end{tabular}}
 \caption{Random audits of $\varepsilon = 5\%$ of auto-decided actions,
-symmetric costs, 10 seeds; arrows show no audits $\to$ audits. The last
+symmetric costs, 10 seeds; arrows show no audits $\to$ audits. Regret
+charges decisions only, so audits are free in it; the value in parentheses
+bills each audit as one escalation. The last
 columns compare the Horvitz--Thompson estimate of the realized false-allow
 rate with its true value, and give the share of seeds whose Jeffreys 95\%
 interval on the audited fraction covers the truth.}
@@ -666,10 +668,16 @@ interval on the audited fraction covers the truth.}
 
 \paragraph{Audits.} Table~\ref{tab:audit} adds random audits at
 $\varepsilon = 5\%$. For the additive gateway they raise labels per action
-from \resALabels\% to \resAudALabels\%, lower regret from \resARegret{} to
-\resAudARegret, and halve veto-window allows (\resAVeto{} $\to$ \resAudAVeto);
-for the linear baseline they cut veto-window allows from \resLVeto{} to
-\resAudLVeto. The Horvitz--Thompson estimate of the realized false-allow rate
+from \resALabels\% to \resAudALabels\% and halve veto-window allows
+(\resAVeto{} $\to$ \resAudAVeto); for the linear baseline they cut
+veto-window allows from \resLVeto{} to \resAudLVeto. Regret as defined charges
+decisions only, so an audit of an auto-decided action is free in it; on that
+measure the additive gateway's regret falls from \resARegret{} to
+\resAudARegret. Billing each audit as one escalation, it rises to
+\resAudACharged{} instead: audits pay for themselves in average regret only if
+one costs at most \resAudABreakEven{} of an escalation, which a post-hoc
+review may or may not. Audits are justified by what they make estimable and by
+the veto-window safety, not by average regret. The Horvitz--Thompson estimate of the realized false-allow rate
 is \resAudAEst\% against a true \resAudATruth\%, and a Jeffreys interval on the
 audited fraction covers the truth in \resAudACover\% of seeds. With about forty
 audits per seed the estimate is noisy, as Proposition~\ref{prop:audit}(b)

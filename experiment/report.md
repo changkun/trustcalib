@@ -53,12 +53,14 @@ Final kernel chosen by evidence (product-EB, per seed): product(σ²=1.6, λ=960
 
 The Horvitz-Thompson estimate k/(ε N_allow) is the unbiased estimator of Proposition 5 (`lean/TrustCalib/Audit.lean`); the Jeffreys interval is on the audited fraction k/n (the Hájek ratio), which is consistent but not the object of the theorem.
 
-| Model | Labels/action | Regret | Veto-window ALLOW (pooled) | HT realized-FA estimate | Truth | Jeffreys 95% (on k/n) covers truth |
-|---|---|---|---|---|---|---|
-| product-v1 | 0.302 ± 0.028 | 0.119 ± 0.017 | 7/109 (no audit: 8/109) | 0.059 ± 0.019 | 0.061 ± 0.006 | 100% |
-| linear-EB | 0.157 ± 0.016 | 0.043 ± 0.006 | 14/109 (no audit: 31/109) | 0.063 ± 0.037 | 0.068 ± 0.007 | 100% |
-| additive | 0.182 ± 0.014 | 0.046 ± 0.004 | 5/109 (no audit: 11/109) | 0.072 ± 0.037 | 0.064 ± 0.005 | 100% |
-| additive-EB | 0.162 ± 0.009 | 0.054 ± 0.011 | 20/109 (no audit: 20/109) | 0.100 ± 0.045 | 0.074 ± 0.006 | 90% |
+Regret charges decisions only, so audits are free in it; the next column bills each audit as one escalation, and the break-even is the audit cost at which the two are equal.
+
+| Model | Labels/action | Regret (audits free) | Regret (audit = 1 escalation) | Break-even audit cost | Veto-window ALLOW (pooled) | HT realized-FA estimate | Truth | Jeffreys 95% (on k/n) covers truth |
+|---|---|---|---|---|---|---|---|---|
+| product-v1 | 0.302 ± 0.028 | 0.119 ± 0.017 | 0.157 ± 0.012 | 0.48 | 7/109 (no audit: 8/109) | 0.059 ± 0.019 | 0.061 ± 0.006 | 100% |
+| linear-EB | 0.157 ± 0.016 | 0.043 ± 0.006 | 0.088 ± 0.010 | 0.36 | 14/109 (no audit: 31/109) | 0.063 ± 0.037 | 0.068 ± 0.007 | 100% |
+| additive | 0.182 ± 0.014 | 0.046 ± 0.004 | 0.089 ± 0.006 | 0.22 | 5/109 (no audit: 11/109) | 0.072 ± 0.037 | 0.064 ± 0.005 | 100% |
+| additive-EB | 0.162 ± 0.009 | 0.054 ± 0.011 | 0.098 ± 0.015 | 0.10 | 20/109 (no audit: 20/109) | 0.100 ± 0.045 | 0.074 ± 0.006 | 90% |
 
 ## Acquisition probe (matched budget, prequential boundary accuracy, paired seeds)
 

@@ -130,9 +130,14 @@ def phase_metrics(res: GatewayResult, phases=SCORED, costs: Costs | None = None)
         "queries": int(sum(s.queried for s in steps)),
     }
     out["ece"], out["_reliability"] = _ece(p, q)
+    out["audit_frac"] = float(np.mean([s.audited for s in steps]))
     if costs is not None:
         loss = np.array([float(costs.loss(d, qq)) for d, qq in zip(dec, q)])
         out["regret"] = float(np.mean(loss - costs.bayes_loss(q)))
+        # Regret charges decisions only, so an audit of an auto-decision is
+        # free in ``regret``; ``regret_audit_charged`` bills each audit as one
+        # escalation (an upper bound on what a post-hoc review costs).
+        out["regret_audit_charged"] = out["regret"] + costs.c_ask * out["audit_frac"]
         out["floor_ask"] = float(np.mean((q > costs.tau_low) & (q < costs.tau_high)))
     return out
 

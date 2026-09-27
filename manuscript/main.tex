@@ -521,7 +521,10 @@ calibration error from \resVEce{} to \resAEce{}, with a false-allow rate of
 from \resVAcc\% to \resAAcc\%, because the additive gateway auto-decides many
 more contestable actions. In the late phase the additive gateway escalates
 \resAAskLate\% of actions against a floor of \resFloorSym\%; the product
-gateway escalates \resVAskLate\%. The simple baselines show why a structured
+gateway escalates \resVAskLate\%. Because the oracle is itself additive, the
+size of this advantage is indicative; what should transfer is the structural
+point that only the drifting components of a model should be forgotten. The
+simple baselines show why a structured
 model is needed at all: the per-tool learner auto-decides everything at
 \resTAcc\% accuracy (regret \resTRegret), and the per-cell learner, which
 needs a label in every cell, reaches \resCAcc\% (regret \resCRegret).

@@ -761,6 +761,25 @@ what the supervisor would have decided? The judge is a black box; only its
 verdict (or score) and, on some actions, the supervisor's decision are
 observable.
 
+OpenAI's open-source Codex CLI makes different choices
+\citep{openai2026codex}. Its auto-review reviewer is a sub-agent consulted
+only when the static layers (sandbox, approval policy, command rules) would
+otherwise ask the user. It sees user and developer messages, project
+instruction files, the agent's messages, tool calls and tool outputs, but not
+the agent's reasoning; everything other than user and developer messages is
+marked as untrusted evidence, and the reviewer may run read-only commands to
+investigate. It returns allow or deny with an optional risk level, and its
+experimental asynchronous pre-scorer maps a single output token to a score of
+$0$ or $1$. A denial returns to the agent as a rejection, and three consecutive
+denials, or ten among the last fifty reviews, interrupt the turn. The two
+designs sit at opposite ends of a trade-off in the judge's view: a
+reasoning-blind view limits what injected text can reach the judge, while a
+fuller view exposes more of the context that separates safe from unsafe
+actions, and more untrusted text with it. Neither exposes a calibrated score,
+and neither routes judge-allowed actions to a human, which is why the
+verdict-only condition of our simulation is the realistic one and why audits
+are needed below.
+
 \begin{definition}[Judge reliability for a supervisor]\label{def:judge}
 For a judge $J$ with verdicts in $\{\textsc{allow}, \textsc{block}\}$ and a
 supervisor with approval probability $q(x,t)$, the judge's false-allow and

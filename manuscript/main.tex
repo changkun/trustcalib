@@ -16,6 +16,7 @@
 \input{generated/table_safety}
 \input{generated/table_audit}
 \input{generated/table_acq}
+\input{generated/judge}
 
 \newtheorem{definition}{Definition}
 \newtheorem{proposition}{Proposition}
@@ -28,7 +29,7 @@
 \large A Formalization of Trust Calibration for Agentic Tool Use}
 \author{Changkun Ou\\[2pt]
 \small Latere AI, Munich, Germany}
-\date{September 27, 2026 \quad (version 2)}
+\date{September 27, 2026 \quad (version 3, draft)}
 
 \begin{document}
 \maketitle
@@ -55,9 +56,16 @@ additive kernel that separates static action risk from drifting tolerance
 halves human labels per action (\resVLabels\% $\to$ \resALabels\%) and cuts
 cost-weighted regret by 59\% at an unchanged false-allow rate; it also
 reverses our earlier negative result on uncertainty-targeted querying, which
-we now trace to forgetting rather than to class imbalance. The problem shares
-its observation model with preferential Bayesian optimization but is not an
-instance of it.
+we now trace to forgetting rather than to class imbalance. We then drop the
+fixed tool taxonomy and put the gateway on top of an opaque LLM judge, as in
+shell-centric agent harnesses: a judge's error rate for a supervisor is not
+identifiable from its verdicts, even together with the supervisor's approval
+rate; it changes when the supervisor's tolerance changes; and it is estimable
+without bias only from labels with known propensities. In a pre-registered
+simulation the calibrated gateway matches the regret of escalating the judge's
+blocks with half the human labels, but cannot repair a judge blind spot that
+its own features do not expose. The problem shares its observation model with
+preferential Bayesian optimization but is not an instance of it.
 \end{abstract}
 
 \section{Introduction and Related Work}\label{sec:intro}
@@ -88,10 +96,14 @@ propose an additive decomposition $f(x,t) = \tau(t) - r(x)$ that forgets only
 what drifts. (iv) We treat the selective-labels structure of the gateway,
 where auto-decided actions are never labelled, and show that random audits
 restore unbiased error estimates and give a certification sample size
-(Proposition~\ref{prop:audit}). (v) The cores of all five propositions are
-machine-checked in Lean~4 (Section~\ref{sec:lean}). (vi) A simulation study
-measures each claim and corrects several claims of the first version of this
-paper (Appendix~\ref{app:changes}).
+(Proposition~\ref{prop:audit}). (v) We extend the gateway to arbitrary shell
+actions judged by an opaque LLM, formalize the two questions such a judge
+raises (is it trustworthy, and how likely is a verdict to be right) and show
+what can and cannot be learned about them (Propositions~\ref{prop:judge-ident}--\ref{prop:judge-ht}).
+(vi) The cores of all eight propositions are machine-checked in Lean~4
+(Section~\ref{sec:lean}). (vii) Simulation studies measure each claim and
+correct several claims of the first version of this paper
+(Appendix~\ref{app:changes}).
 
 \paragraph{Selective classification and deferral.} A classifier that may
 abstain at a cost is Chow's reject option \citep{chow1970optimum}, developed
@@ -132,6 +144,17 @@ continuous-time analogue; non-stationary covariances \citep{paciorek2003nonstati
 and online changepoint detection \citep{adams2007bocd} are alternatives.
 Additive kernels \citep{duvenaud2011additive} let a model forget some
 components and not others.
+
+\paragraph{LLM judges and monitors.} Language-model judges now gate agent
+actions in deployed coding agents \citep{hughes2026automode}. Calibrated
+selective evaluation with an agreement guarantee \citep{jung2025trust},
+prediction-powered and active inference from few human labels
+\citep{angelopoulos2023ppi,zrnic2024active}, latent-class models of annotator
+error \citep{dawid1979maximum,allman2009identifiability}, and AI control with
+trusted monitors and audit budgets \citep{greenblatt2024control,bhatt2025ctrlz}
+all bear on how far such a judge can be trusted; judges' errors are correlated
+across models \citep{kim2025correlated,goel2025great} and they can be attacked
+\citep{remedios2026redteaming}.
 
 \paragraph{Trust in automation and agent governance.} Appropriate reliance
 aligns trust with trustworthiness \citep{lee2004trust}, and trust calibration
@@ -716,9 +739,221 @@ action. Right: reliability of $\hat p$ against the true approval probability
 \label{fig:savings}
 \end{figure}
 
+\section{Beyond a Known Tool Set: Calibrating an Opaque Judge}\label{sec:judge}
+
+The gateway above assumes a fixed taxonomy of tools whose risk attributes are
+known. Current agent harnesses increasingly route work through a
+general-purpose shell, so an action is arbitrary code and no fixed taxonomy
+exists. In practice the \textsc{ask} decision is then delegated to a second
+model, an LLM \emph{judge}. In Claude Code's auto mode, for example, a
+transcript classifier reviews shell commands, web fetches, external tool
+calls and filesystem operations outside the project (read-only tools and
+in-project edits skip it); it ``sees only user messages and the agent's tool
+calls'', with the agent's own messages and tool outputs removed; it returns
+allow or block, a block comes back to the agent as a tool result telling it
+to find a safer path, and the human is asked only after three consecutive or
+twenty total blocks \citep{hughes2026automode}. Its reported false-positive
+rate is $0.4\%$ on $10{,}000$ real actions and its false-negative rate $17\%$
+on $52$ real overeager actions and $5.7\%$ on $1{,}000$ synthetic exfiltration
+attempts \citep{hughes2026automode}. Two questions follow: is the judge
+trustworthy, and when it says allow or block, how likely is that verdict to be
+what the supervisor would have decided? The judge is a black box; only its
+verdict (or score) and, on some actions, the supervisor's decision are
+observable.
+
+\begin{definition}[Judge reliability for a supervisor]\label{def:judge}
+For a judge $J$ with verdicts in $\{\textsc{allow}, \textsc{block}\}$ and a
+supervisor with approval probability $q(x,t)$, the judge's false-allow and
+false-block rates over a period are
+$\mathrm{FA}_J = \Pr(y = 0 \mid J = \textsc{allow})$ and
+$\mathrm{FB}_J = \Pr(y = 1 \mid J = \textsc{block})$. The judge is
+\emph{$(\alpha,\delta)$-trustworthy} for that supervisor and period if
+$\mathrm{FA}_J \le \alpha$ is certified with confidence $1-\delta$. The
+reliability of an individual verdict is the posterior
+$\hat p\bigl(J(x), z(x), t\bigr) = \Pr(y = 1 \mid J(x), z(x), t, \mathcal D)$
+given the verdict, cheap observable features $z$ and the labels so far.
+\end{definition}
+
+\begin{proposition}[What cannot be learned without paired labels]\label{prop:judge-ident}
+(a) For every judge allow rate $a \in (0,1)$ and every $\varphi \in [0,1]$
+there is a joint distribution of verdict and supervisor decision with
+$\Pr(J = \textsc{allow}) = a$ and $\mathrm{FA}_J = \varphi$. (b) Even the two
+marginals together do not identify $\mathrm{FA}_J$: two joints with the same
+judge allow rate ($0.8$) and the same supervisor approval rate ($0.9$) have
+$\mathrm{FA}_J = 0$ and $\mathrm{FA}_J = 1/8$.
+\end{proposition}
+
+A judge's error rate for a supervisor is therefore a property of the
+\emph{joint} distribution, observable only through actions that carry both a
+verdict and a human label. Several judges do not remove the need: latent-class
+models become generically identifiable from three or more observers only if
+they are conditionally independent given the truth
+\citep{dawid1979maximum,allman2009identifiability}, and the errors of language
+models are strongly correlated \citep{kim2025correlated,goel2025great}.
+
+\begin{proposition}[Reliability is relational]\label{prop:judge-rel}
+Fix a judge, i.e.\ the set $A$ of actions it allows, and a finite population
+with nonnegative weights. If supervisor $q'$ is nowhere more permissive than
+supervisor $q$ on $A$, the judge's false-allow rate for $q'$ is at least its
+false-allow rate for $q$.
+\end{proposition}
+
+The same, unchanged judge is thus more or less trustworthy depending on whose
+decisions it stands in for and when: a certificate for one supervisor or one
+period does not transfer to another. This is where the judge and the gateway
+meet. The judge can estimate the static risk $r(x)$ of arbitrary code, which
+is what it is good at; the published analysis of the production classifier
+finds that in most misses it ``correctly identifies the danger'' but misjudges
+whether ``a real consent signal in the session actually covers this action''
+\citep{hughes2026automode}, which is the supervisor-specific tolerance
+$\tau(t)$ of Definition~\ref{def:latent}.
+
+\begin{proposition}[Unbiased estimation with known propensities]\label{prop:judge-ht}
+If action $i$ receives a human label with known probability $\pi_i > 0$
+(for example $\pi_i = 1$ when it is escalated and $\pi_i = \varepsilon$ when it
+is an audited auto-decision), the Horvitz--Thompson sum
+$\sum_i L_i e_i/\pi_i$ is unbiased for $\sum_i e_i$.
+\end{proposition}
+
+Proposition~\ref{prop:judge-ht} generalizes Proposition~\ref{prop:audit}(a) and
+lets escalations and audits both count, provided each label's propensity is
+logged; this is the logic of active and prediction-powered inference
+\citep{zrnic2024active,angelopoulos2023ppi}. In a design where the human sees
+an action only after repeated judge blocks, labels exist only for blocked
+actions, every propensity on judge-allowed actions is zero, and
+$\mathrm{FA}_J$ is not estimable at all.
+
+\paragraph{A calibrated gateway on top of the judge.} We therefore treat the
+judge's output as a feature rather than a decision. The gateway of
+Sections~\ref{sec:gp}--\ref{sec:audit} runs on $\bigl(J(x)$ or its score,
+a coarse command category $z(x)$, $t\bigr)$ with the additive kernel: its
+static part learns how this supervisor's approvals relate to the judge's
+output in each category, and its time part tracks the supervisor's tolerance.
+Its posterior $\hat p$ answers the second question per action; its Chow rule
+escalates rather than blocks where the judge's verdict is unreliable for this
+supervisor; and audits with logged propensities keep $\mathrm{FA}_J$
+estimable. One limit is structural: the gateway cannot separate actions that
+look identical in its own features, so it cannot repair a judge blind spot its
+features do not expose. Argument-level features (for example static patterns
+in the command, as in the Go port's shell heuristics) are the remedy, not
+more calibration.
+
+\paragraph{Simulation.} We keep the oracle, stream and seeds of
+Section~\ref{sec:simulation} and add a judge, with every setting fixed in a
+pre-registration committed before the first run (no deviations). The judge
+sees the action's static risk but not the supervisor's trust state, task
+preferences or veto; it blocks when a noisy score of the risk exceeds a fixed
+threshold, and it has a blind spot: destructive shell commands look benign to
+it. The gateway sees only the judge's verdict (or score), an eight-way command
+category and time. This simulated judge is much stricter than the production
+classifier: it blocks about a quarter of all actions, most of which this
+supervisor would approve, against a reported false-positive rate of $0.4\%$.
+Gains from turning its blocks into escalations are therefore dominated by
+avoided false blocks and reflect the pre-registered threshold rather than a
+prediction about any deployed system; the relational and estimation results
+below do not depend on it.
+
+\begin{table}[tb]
+\centering
+\small
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+& \multicolumn{4}{c}{\textbf{Symmetric costs}} & \multicolumn{2}{c}{\textbf{Safety costs}} \\
+\cmidrule(lr){2-5}\cmidrule(lr){6-7}
+\textbf{Policy} & \textbf{Regret} & \textbf{Labels \%} & \textbf{FA \%} & \textbf{Blind FA}
+ & \textbf{Regret} & \textbf{Labels \%} \\
+\midrule
+\TabJudge
+\bottomrule
+\end{tabular}
+\caption{Opaque-judge study, verdict input, 10 seeds. FA is the share of
+\textsc{allow}s the oracle would deny; Blind FA pools, over seeds, the blind-spot
+actions the oracle would deny that were auto-allowed. Audits are free in
+regret (Section~\ref{sec:simulation}).}
+\label{tab:judge}
+\end{table}
+
+\paragraph{Results.} Table~\ref{tab:judge} summarizes the policies. Letting the
+judge decide alone gives regret \jrJudgeOnlyRegret{} with no human labels;
+escalating its blocks instead of enforcing them gives \jrJudgeEscalateRegret{}
+at \jrJudgeEscalateLabels\% labels. The calibrated gateway reaches the same
+regret (\jrCalibratedRegret) with half the labels (\jrCalibratedLabels\%),
+and lower regret with the judge's score (\jrCalibratedScoreRegret) or with
+audits (\jrCalibratedAuditRegret, audits unbilled). It is also more permissive
+than the judge (false-allow \jrCalibratedFA\% against \jrJudgeOnlyFA\%),
+because it learns that this supervisor approves much of what the judge
+blocks: the gateway estimates whether \emph{this supervisor} would approve,
+not whether the action is safe, and a judge's fixed policy can be safer than
+a supervisor's revealed tolerance. Under safety-weighted costs the sign flips
+(false-allow \jrCalibratedSafeFA\%) at \jrCalibratedSafeLabels\% labels, and
+calibration buys regret \jrCalibratedSafeRegret{} against
+\jrJudgeEscalateSafeRegret{} for escalating the judge's blocks, at about
+twenty more labels per hundred actions. With the product kernel the gateway
+again escalates almost everything under safety costs
+(\jrCalibratedProductAuditSafeLabels\% labels), the forgetting collapse of
+Proposition~\ref{prop:forget} outside the tool taxonomy.
+
+The judge's reliability for this supervisor moves while the judge does not
+(Figure~\ref{fig:judge}): its false-allow rate is \jrRelPreFATrue\% before the
+supervisor's trust reset, \jrRelPostFATrue\% after it and \jrRelLateFATrue\%
+late, as Proposition~\ref{prop:judge-rel} predicts. Horvitz--Thompson estimates
+from the gateway's labels track these values (\jrRelPreFAEst\%,
+\jrRelPostFAEst\% and \jrRelLateFAEst\% on average), unbiased but noisy within
+a window, with standard deviations across seeds of \jrRelPreFASd{} to
+\jrRelPostFASd{} points, because each window holds only \jrRelPreLabels{} to
+\jrRelPostLabels{} human labels on judge-allowed actions, escalations and
+audits together. Without audits
+they are undefined in every seed. The blind spot is not caught under
+symmetric costs: \jrCalibratedBlind{} of the blind-spot actions this
+supervisor would deny are still allowed, because they are indistinguishable
+from benign shell commands in the gateway's features; under safety costs the
+count falls to \jrCalibratedSafeBlind{} only because the gateway escalates
+judge-allowed shell commands as a class.
+
+\begin{figure}[tb]
+\centering
+\includegraphics[width=0.62\linewidth]{judge_reliability.pdf}
+\caption{The same judge's error rates for one supervisor, before and after the
+supervisor's trust reset: truth (solid) and Horvitz--Thompson audit estimates
+(dashed, $\pm 1$ s.d.\ across seeds).}
+\label{fig:judge}
+\end{figure}
+
+\paragraph{Answering the two questions.} Whether a judge is trustworthy is a
+statistical claim about a moving target. It cannot be read off the judge's
+verdicts (Proposition~\ref{prop:judge-ident}); it changes with the supervisor
+(Proposition~\ref{prop:judge-rel}); and certifying it takes clean audits in
+proportion to $1/\alpha$ (Proposition~\ref{prop:audit}(b)): $12$ for
+$\alpha = 25\%$, $300$ for $\alpha = 1\%$, while the quantity drifts on the
+supervisor's timescale. Certification and tracking pull against each other,
+and the honest form of a trust claim is ``false-allow rate below $\alpha$ for
+this supervisor over the last $n$ audits''. How likely a given verdict is to
+be right is the calibrated posterior $\hat p$, which needs the same labels and
+cannot exceed what the features can distinguish.
+
+\paragraph{Limits of the human as ground truth.} Our supervisor is noisy but
+unbiased. Real supervisors are not: users approve $97\%$ of permission prompts
+in one deployment, and in a controlled study human reviewers caught $13.6\%$ of
+dangerous commands against $89\%$ for the classifier, with their block rate
+falling from about $17\%$ early in a session to about $5\%$ after fifty or more
+prompts \citep{phillippi2026automodedefault}, consistent with habituation to
+repeated warnings \citep{anderson2015polymorphic}. A gateway calibrated to a
+rubber-stamping supervisor learns to rubber-stamp; a fatigue-aware model would
+make the cost of asking, and the noise of the answer, grow with the escalation
+rate, which argues for fewer and better-targeted escalations. Judges are also
+attack surfaces: agent-written prompt injections obtained arbitrary shell
+execution past two production classifiers in $79\%$ of trials
+\citep{remedios2026redteaming}, and reliability estimated from benign audits
+says nothing about adaptive attacks; control protocols with trusted monitors
+and audit budgets address that setting \citep{greenblatt2024control,bhatt2025ctrlz}.
+Finally, each judge call is itself a paid model call, so a cascade that
+consults the judge only when the gateway is uncertain, in the spirit of
+selective evaluation with escalation \citep{jung2025trust}, is a natural next
+step.
+
 \section{Mechanized Verification}\label{sec:lean}
 
-The decision-theoretic and algebraic cores of Propositions~\ref{prop:ident}--\ref{prop:audit}
+The decision-theoretic and algebraic cores of Propositions~\ref{prop:ident}--\ref{prop:judge-ht}
 are formalized in Lean~4 (v4.34.1) with Mathlib (v4.34.1) in the
 \texttt{lean/} directory of the released code; the build has no \texttt{sorry},
 and every theorem depends only on Lean's standard axioms (\texttt{propext},
@@ -732,7 +967,9 @@ the cross-covariance vector with coefficients fixed by the training data,
 which is the form of the Laplace mean and of exact GP regression.
 Proposition~\ref{prop:chow}(a) is proved for an arbitrary probability measure
 over the latent value using the Bochner integral, and
-Proposition~\ref{prop:floor} for finite action populations. The Python
+Proposition~\ref{prop:floor} for finite action populations; Proposition~\ref{prop:judge-ident}
+is proved by explicit construction on the four cells of the verdict--decision
+table. The Python
 experiment checks the same statements numerically
 (\texttt{experiment/tests}).
 
@@ -748,10 +985,11 @@ Prop.~\ref{prop:chow} & \lean{Chow.lean} & \lean{expectedLoss\_allow}, \lean{exp
 Prop.~\ref{prop:floor} & \lean{Floor.lean} & \lean{optimal\_asks\_on\_band}, \lean{escalation\_floor} \\
 Prop.~\ref{prop:forget} & \lean{Forgetting.lean} & \lean{kT\_shift}, \lean{meanProd\_shift}, \lean{quadForm\_shift}, \lean{exp\_decay\_tendsto}, \lean{eventually\_ask}, \lean{reentry\_bound}, \lean{reentry\_prob}, \lean{meanAdd\_shift}, \lean{meanAdd\_tendsto} \\
 Prop.~\ref{prop:audit} & \lean{Audit.lean} & \lean{audit\_unbiased}, \lean{one\_sub\_pow\_le\_exp}, \lean{certify\_sample\_size} \\
+Props.~\ref{prop:judge-ident}--\ref{prop:judge-ht} & \lean{Judge.lean} & \lean{judge\_unidentified}, \lean{judge\_marginals\_not\_enough}, \lean{judgeFA\_mono}, \lean{ht\_unbiased} \\
 Remark (margin) & \lean{Identifiability.lean} & \lean{lcb\_iff} \\
 \bottomrule
 \end{tabular}
-\caption{Propositions and their machine-checked counterparts (27 theorems).}
+\caption{Propositions and their machine-checked counterparts (31 theorems).}
 \label{tab:lean}
 \end{table}
 
@@ -767,11 +1005,13 @@ confidence bar; and the labels the gateway collects are selected, so audits
 are needed to know its error rate. In simulation, a kernel that separates
 static risk from drifting tolerance halves the human burden and turns the
 \textsc{ask} band into an effective acquisition rule, while correlated
-generalization still leaks approval to unseen dangerous actions. The
-remaining gaps are empirical (a longitudinal study of real supervisors) and
-structural: modern agents route much of their work through a general-purpose
-shell, where no fixed tool taxonomy exists and risk features must themselves
-be inferred, which we leave to future work.
+generalization still leaks approval to unseen dangerous actions. When the
+tool taxonomy is replaced by an opaque judge over arbitrary shell actions, the
+same machinery calibrates the judge to a supervisor, but the judge's
+trustworthiness becomes a moving, relational quantity that only audited
+labels can measure, and calibration cannot see past the features it is given.
+The main remaining gap is empirical: a longitudinal study of real supervisors,
+whose own reliability as ground truth declines as they are asked more often.
 
 \appendix
 
@@ -855,6 +1095,13 @@ as equivalent to the time kernel, and illustrated argument-level transfer
 (\texttt{DROP} to \texttt{TRUNCATE}) that its single destructive-argument
 feature cannot express. These are corrected.
 \end{enumerate}
+
+\section{Additions in Version 3}\label{app:v3}
+
+Section~\ref{sec:judge} (an opaque judge in front of the gateway,
+Definition~\ref{def:judge}, Propositions~\ref{prop:judge-ident}--\ref{prop:judge-ht}
+and a pre-registered simulation) and its Lean formalization
+(\texttt{Judge.lean}) are new in version 3.
 
 \bibliographystyle{plainnat}
 \bibliography{references}

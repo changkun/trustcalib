@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software or build on the paper, please cite the paper below."
+title: "trustcalib: artifact for Progressive Autonomy as Preference Learning"
+authors:
+  - family-names: Ou
+    given-names: Changkun
+    affiliation: "Latere AI, Munich, Germany"
+repository-code: "https://github.com/changkun/trustcalib"
+license: Apache-2.0
+preferred-citation:
+  type: article
+  title: "Progressive Autonomy as Preference Learning: A Formalization of Trust Calibration for Agentic Tool Use"
+  authors:
+    - family-names: Ou
+      given-names: Changkun
+      affiliation: "Latere AI, Munich, Germany"
+  year: 2026
+  journal: "arXiv preprint"
+  identifiers:
+    - type: other
+      value: "arXiv:2605.19151"
+      description: "arXiv identifier"
+  url: "https://arxiv.org/abs/2605.19151"

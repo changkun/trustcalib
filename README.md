@@ -1,152 +1,218 @@
 # Progressive Autonomy as Preference Learning
 
-This repository contains a manuscript that formalizes trust calibration for
-agentic tool use, a simulation study that tests it, a Lean 4 formalization of
-its theory, and a Go port of the gateway as an agent-harness plugin.
+**A Formalization of Trust Calibration for Agentic Tool Use**
 
-**Paper: [`manuscript/main.pdf`](manuscript/main.pdf)** (version 3; version 1
-is [arXiv:2605.19151](https://arxiv.org/abs/2605.19151); release tags `v1`,
-`v2`, `v3`).
+Changkun Ou, Latere AI, Munich, Germany ·
+[arXiv:2605.19151](https://arxiv.org/abs/2605.19151) ·
+PDF: [`manuscript/main.pdf`](manuscript/main.pdf)
 
-- `manuscript/` LaTeX source (`main.tex`, `references.bib`); every number in
-  the paper is a macro in `manuscript/generated/`, written by the experiment.
-- `experiment/` runnable implementation, tests, figures and report.
-- `lean/` machine-checked proofs of the paper's propositions.
-- `go/` a Go port of the gateway (library + CLI hook) for real agent harnesses.
+This repository is the research artifact for the paper. It contains:
+- the LaTeX source;
+- the simulation that produces every table, figure and number in the paper;
+- a Lean 4 formalization of its propositions;
+- a Go implementation of the gateway for real agent harnesses.
 
-## Motivation
+## Abstract
 
-Coding agents gate actions with a binary switch: auto-run, or deny. A hard
-deny does not pause the run for a human; the agent receives a refusal and
-keeps going, often routing around the obstacle in ways that are worse than
-asking would have been. The missing primitive is not *block* but *escalate*,
-and when to escalate should be learned from the supervisor's own approve/deny
-history rather than hand-written.
+Coding agents gate tool calls with a binary switch: run automatically, or
+refuse. The missing primitive is *escalation*, and the point at which to
+escalate should be learned from the supervisor's own approve/deny decisions.
 
-## What the paper shows
+**Formulation.** We formalize this as Gaussian-process classification with a
+reject option, learned online:
+- The three-tier ALLOW / ASK / BLOCK gateway is Chow's Bayes-optimal
+  reject-option rule, with thresholds `tau_high = 1 - c_ask/c_FA` and
+  `tau_low = c_ask/c_FB` set by stated costs.
 
-The gateway keeps a Gaussian-process posterior over a latent tolerance
-`f(x, t) = tau(t) - r(x) + h(x, t)` (static action risk `r`, drifting
-supervisor tolerance `tau`), observed through a probit likelihood on
-approve/deny feedback, and decides ALLOW / ASK / BLOCK. Five propositions
-about the gateway (a further three about LLM judges follow below), each
-machine-checked in `lean/`:
+**Theory.** We prove four results about this gateway:
+- Unary approve/deny feedback identifies the allow/deny boundary, while
+  pairwise (preferential) feedback cannot.
+- A separable time-decaying kernel forgets static action risk and forces every
+  unlabelled action back into escalation.
+- The irreducible escalation rate is a property of the supervisor.
+- Random audits give unbiased false-allow estimates; certifying a rate below
+  `alpha` takes `ln(1/delta)/alpha` clean audits.
 
-1. **Identifiability.** Unary approve/deny feedback identifies the allow/deny
-   boundary; pairwise (preferential) feedback cannot, because it is invariant
-   to shifting `f` by a constant. The gateway is GP classification with a
-   reject option, a relative of preferential Bayesian optimization rather than
-   an instance of it.
-2. **Decision rule.** The three-tier rule is Chow's reject option: with costs
-   for a false allow, a false block and an escalation, the thresholds are
-   `tau_high = 1 - c_ask/c_FA` and `tau_low = c_ask/c_FB`, and the rule depends
-   on the posterior only through the mean approval probability. Thresholds are
-   specified, not tuned.
-3. **Escalation floor.** Even a perfect posterior escalates every action whose
-   true approval probability lies in the band, so the achievable automation
-   rate is a property of the supervisor and the costs.
-4. **Forgetting.** A separable kernel `k_x * k_time` decays every unlabelled
-   action back to `p_hat = 1/2`, forcing re-escalation after at most
-   `lambda * ln(m/z)` steps. An additive kernel forgets only what drifts.
-5. **Audits.** Auto-decided actions are never labelled. Random audits give an
-   unbiased false-allow estimate; certifying a false-allow rate below `alpha`
-   at confidence `1 - delta` takes `ln(1/delta)/alpha` clean audits (300 for
-   1% at 95%).
+**Simulation.** An additive kernel that separates static risk from drifting
+tolerance halves human labels per action (28.4% to 13.5%) and cuts
+cost-weighted regret by 59%, at an unchanged false-allow rate.
 
-## What the simulation shows
+**Opaque LLM judges.** We then replace the tool taxonomy with an opaque LLM
+judge, as in shell-centric agent harnesses:
+- A judge's error rate for a supervisor is not identifiable from its verdicts.
+- It changes when the supervisor's tolerance changes.
+- It is estimable without bias only from labels with known propensities.
 
-No public dataset records a single supervisor's per-action decisions as their
-tolerance drifts, so the experiment is a **controlled simulation with a known
-oracle** (`experiment/oracle.py`). "The method recovers the oracle" means "the
-inference is correct under the model", not "the real world behaves like this".
-Headline numbers (10 seeds; `experiment/report.md` has all tables):
+In a pre-registered simulation, the calibrated gateway matches the regret of
+escalating the judge's blocks with half the human labels. It cannot, however,
+repair a judge blind spot that its features do not expose.
 
-- The additive kernel cuts human labels per action from 28.4% to 13.5% and
-  cost-weighted regret by 59% at a false-allow rate of about 1%, at the price
-  of 1.4 points of auto-decision accuracy.
-- Under safety-weighted costs (ALLOW only above 0.90) the v1 product kernel
-  escalates 99% of actions; the additive kernel escalates 46% against a 31%
-  floor.
-- Version 1's negative result on uncertainty-targeted querying is explained:
-  with the product kernel the ASK band is no better than random querying; with
-  the additive kernel it beats random by about 3 points. The cause is
-  forgetting, not class imbalance, and a BALD sampler does not help.
-- 5% random audits halve ALLOWs inside the post-reset veto window and give an
-  unbiased false-allow estimate.
+All eight propositions are machine-checked in Lean 4 with Mathlib.
 
-Reported as limitations:
+## Research questions
 
-- Correlated generalization leaks: on a never-labelled dangerous combination
-  (`git_force_push -> prod_infra`) every kernel model auto-allows about 11% of
-  the oracle's denials.
-- A Bayesian linear probit with the same time structure is competitive on
-  average metrics, because the oracle's static term is linear in the features
-  by construction; it is much worse on the veto interaction.
-- Evidence (marginal-likelihood) selection prefers long memories that improve
-  calibration but double veto-window allows.
+| | Question | Answered in |
+|---|---|---|
+| RQ1 | Which decision rule and thresholds should a three-tier gateway use? | Sec. 3.4, Sec. 6.1 |
+| RQ2 | Which feedback identifies the allow/deny boundary? | Sec. 3.2, Related Work |
+| RQ3 | What should a model of a drifting supervisor forget? | Sec. 3.5–3.6, Sec. 6 |
+| RQ4 | How can the gateway know its own error rate when auto-decided actions are never labelled? | Sec. 3.7, Sec. 7 |
+| RQ5 | When an opaque LLM judge replaces the tool taxonomy, is the judge trustworthy, and how likely is a verdict to be right? | Sec. 4, Sec. 8 |
 
-Version 2 also corrects several claims of version 1 (listed in the paper's
-appendix), including the burden ratio: version 1's "~1.8x" compared
-full-stream queries against scored-phase actions.
+Main findings (simulation with a known oracle, 10 seeds):
 
-## Version 3: an opaque LLM judge instead of a tool taxonomy
+- **Additive kernel.** Separating static risk from drifting tolerance cuts
+  human labels from 28.4% to 13.5% of actions and regret by 59%, at a
+  false-allow rate of about 1%.
+  - Under safety-weighted costs, the separable kernel escalates 99.1% of
+    actions and the additive kernel 45.9%, against a floor of 31.3% that no
+    learner can go below.
+- **Calibrated judge.** A gateway calibrated over an LLM judge's verdicts
+  matches the regret of escalating the judge's blocks (0.086 vs 0.088) with
+  half the human labels (11.8% vs 25.3%).
+- **Relational reliability.** The same judge's false-allow rate for the same
+  supervisor moves from 2.9% to 10.0% and back to 3.4% around the
+  supervisor's trust reset. Only audited labels with known propensities can
+  track this.
 
-Shell-centric harnesses have no fixed tool set; an LLM judge (such as Claude
-Code's auto-mode classifier) decides allow/block from a restricted view. The
-third version (release tags `v1`, `v2`, `v3`) adds Section 12 and
-`lean/TrustCalib/Judge.lean`:
-
-- **Is the judge trustworthy?** A judge's false-allow rate for a supervisor
-  is not identifiable from its verdicts, even together with the supervisor's
-  approval rate (Prop. 6); it rises when the supervisor becomes stricter
-  (Prop. 7); it is estimable without bias only from human labels with known
-  propensities (Prop. 8), and certifying it below `alpha` takes
-  `ln(1/delta)/alpha` clean audits while it drifts.
-- **How likely is a verdict right?** The gateway's calibrated posterior over
-  (judge output, command category, time) answers it per action.
-- Pre-registered simulation (`experiment/judge_prereg.md`,
-  `uv run python -m experiment.run_judge`): escalating the judge's blocks
-  instead of enforcing them cuts regret 0.296 -> 0.088; the calibrated gateway
-  matches that with half the labels (11.8% vs 25.3%). The same judge's
-  false-allow rate for the supervisor goes 2.9% -> 10.0% -> 3.4% around the
-  supervisor's trust reset. Calibration cannot catch a judge blind spot that
-  the gateway's own features do not expose.
-
-## Layout
+## Repository structure
 
 ```
-experiment/
-  data.py      synthetic action/context space and stream
-  oracle.py    ground-truth latent f*, probit, trust drift and reset, veto
-  kernel.py    product (v1), additive (v2) and linear kernels
-  gp.py        Laplace GP-probit (R&W Alg. 3.1/3.2), evidence selection, BALD
-  gateway.py   Chow thresholds, three-tier rule, audits, online loop
-  eval.py      metrics and baselines (per-tool, per-cell, linear)
-  run.py       orchestration; writes figures/, report.md, results.json and
-               manuscript/generated/*.tex
-  tests/       correctness tests (kernels, Laplace, Chow, forgetting, audits)
-lean/          Lean 4 + Mathlib proofs (see lean/README.md)
-manuscript/    paper source; `make` builds main.pdf, `make arxiv` the bundle
-go/            Go port of the gateway (library + CLI hook)
+manuscript/   paper source (main.tex, references.bib); generated/ holds the
+              tables and numbers written by the experiment; Makefile builds
+              main.pdf and the arXiv bundle
+experiment/   Python simulation: oracle, GP-probit gateway, baselines, the
+              judge study and its pre-registration, tests, figures/, reports
+lean/         Lean 4 + Mathlib proofs of Propositions 1–8 (see lean/README.md)
+go/           Go library and CLI hook implementing the gateway for agent
+              harnesses (see go/README.md)
 ```
 
-## Run
-
-Dependencies are managed with `uv`; the paper builds with `tectonic`; the
-proofs build with `lake` (elan).
+Inside `experiment/`:
 
 ```
-uv sync                                  # install
-uv run python -m experiment.run          # all tables, figures, paper macros (~1 min)
-uv run python -m experiment.run_judge    # opaque-judge study (~1 min)
-uv run pytest                            # correctness tests
+data.py        synthetic action/context space and decision stream
+oracle.py      ground-truth supervisor: static risk, trust drift and reset, veto
+kernel.py      product (separable), additive and linear kernels
+gp.py          Laplace GP-probit classifier, evidence-based selection, BALD
+gateway.py     Chow thresholds, three-tier rule, audits, online loop
+eval.py        metrics and baselines (per-tool, per-cell)
+judge.py       simulated opaque LLM judge and the calibrated-judge policies
+run.py         main study: tables, figures, report.md, results.json, macros
+run_judge.py   judge study: table, figure, report_judge.md, results_judge.json, macros
+judge_prereg.md  pre-registration of the judge study
+tests/         correctness tests
+```
+
+## Requirements
+
+| Component | Needed for | Version |
+|---|---|---|
+| Python + [uv](https://docs.astral.sh/uv/) | simulation, tables, figures, tests | Python 3.12 (`.python-version`); numpy, scipy, matplotlib pinned in `uv.lock` |
+| [elan](https://github.com/leanprover/elan) / `lake` | checking the proofs | Lean `v4.34.1` (`lean/lean-toolchain`), Mathlib `v4.34.1` |
+| [tectonic](https://tectonic-typesetting.github.io/) | building the PDF | tested with 0.17 |
+| Go | the gateway implementation | 1.26 or later (`go/go.mod`) |
+
+No GPU is needed. Each simulation runner uses a process pool with all but two
+CPU cores and takes about a minute on an 18-core machine; expect the time to
+scale roughly inversely with the number of cores.
+
+## Reproducing the paper
+
+Run from the repository root.
+
+```
+uv sync                                         # install the Python environment
+uv run python -m experiment.run                 # main study
+uv run python -m experiment.run_judge           # judge study
+uv run pytest                                   # Python tests
 (cd lean && lake exe cache get && lake build)   # check the proofs
-(cd manuscript && make && make arxiv)    # paper and arXiv bundle
+(cd manuscript && make)                         # build main.pdf
+(cd manuscript && make arxiv)                   # build and test-compile arxiv.tar.gz
 ```
 
-Each run is multi-seed and deterministic given the seeds.
+| Paper element | Command | Output | Time |
+|---|---|---|---|
+| Propositions 1–8 (formal proofs) | `cd lean && lake build` | build log (no `sorry`, standard axioms only) | ~1 min with the Mathlib cache |
+| Propositions 2, 4, 5 (numerical checks on the implementation) | `uv run pytest` | test report | seconds |
+| Main comparison and safety-weighted costs (Sec. 6.1) | `uv run python -m experiment.run` | `manuscript/generated/table_main.tex`, `table_safety.tex` | ~1 min (one run makes every output of this row group) |
+| Acquisition probe (Sec. 6.2) | same run | `manuscript/generated/table_acq.tex` | |
+| Generalization to never-labelled actions (Sec. 6.3) | same run | `experiment/figures/transfer.pdf` | |
+| Policy mix over time; forgetting, drift tracking and calibration | same run | `experiment/figures/policy_evolution.pdf`, `forgetting.pdf` | |
+| Auditing auto-decisions (Sec. 7) | same run | `manuscript/generated/table_audit.tex` | |
+| All numbers quoted in the text for Secs. 3 and 6–7 | same run | `manuscript/generated/results.tex`, `experiment/report.md`, `experiment/results.json` | |
+| Calibrating a simulated LLM judge (Sec. 8): table, figure, numbers | `uv run python -m experiment.run_judge` | `manuscript/generated/judge.tex`, `experiment/figures/judge_reliability.pdf`, `experiment/report_judge.md`, `experiment/results_judge.json` | ~1 min |
+| The PDF | `cd manuscript && make` | `manuscript/main.pdf` | under a minute (the first tectonic run also downloads TeX packages) |
+| arXiv source bundle | `cd manuscript && make arxiv` | `manuscript/arxiv.tar.gz` | about a minute (compiles twice) |
 
-The Go port in `go/` implements the gateway for real harnesses: product
-(v1) and additive (v2) kernels, cost-derived thresholds, random audits with
-logged propensities and a certification check, and a judge featurizer for
-shell-centric harnesses (see `go/README.md`).
+Notes on reproducibility:
+
+- **Every number is generated.** Every number in the paper is a LaTeX macro
+  written by one of the two runners into `manuscript/generated/`; no result is
+  typed by hand. The committed outputs are the ones the paper was built from.
+- **Deterministic runs.** Each run is multi-seed (10 seeds; 20 paired seeds
+  for the acquisition probe) and deterministic given the seeds, so a rerun
+  reproduces the committed files.
+- **The judge study was pre-registered.** Its judge model, policies, metrics
+  and seeds were fixed in `experiment/judge_prereg.md` and committed (commit
+  `c742223`) before the first run. `experiment/report_judge.md` states that
+  there were no deviations.
+- **What the simulation shows.** The simulation has a known oracle, because
+  no public dataset records one supervisor's per-action decisions while their
+  tolerance drifts. Recovering the oracle shows that the inference is correct
+  under the model, not that real supervisors behave like it. The paper's
+  Discussion lists the limitations.
+
+## Tests
+
+```
+uv run pytest            # Python: kernels, Laplace inference, Chow rule, forgetting, audits, judge
+(cd go && go test ./...) # Go: golden fixtures from the Python reference plus property tests
+```
+
+## Machine-checked proofs
+
+The decision-theoretic and algebraic cores of all eight propositions are
+formalized in Lean 4 with Mathlib: 31 theorems, no `sorry`, and only Lean's
+standard axioms. The link function is kept abstract, so the results hold for
+the probit and logistic links alike. The Laplace approximation itself is not
+formalized. See [`lean/README.md`](lean/README.md) for the mapping from
+propositions to theorems and the exact scope.
+
+## Go implementation
+
+[`go/`](go) implements the gateway as a library and a stateless CLI hook
+(`trustcalib-hook decide | observe | tune | stats`) that an agent harness can
+call before each tool call. It supports:
+- the product and additive kernels;
+- cost-derived thresholds;
+- random audits with logged propensities, and a certification check;
+- a featurizer over an LLM judge's verdict and a command category, for
+  shell-centric harnesses.
+
+Its numerics are tested against golden fixtures exported from the Python
+reference. See [`go/README.md`](go/README.md).
+
+## Citation
+
+```bibtex
+@misc{ou2026progressive,
+  title         = {Progressive Autonomy as Preference Learning: A Formalization
+                   of Trust Calibration for Agentic Tool Use},
+  author        = {Ou, Changkun},
+  year          = {2026},
+  eprint        = {2605.19151},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.AI},
+  url           = {https://arxiv.org/abs/2605.19151}
+}
+```
+
+`CITATION.cff` carries the same metadata.
+
+## License
+
+Apache License 2.0; see [`LICENSE`](LICENSE).
+
+The release history (git tags and the corresponding arXiv versions) is in
+[`CHANGELOG.md`](CHANGELOG.md).

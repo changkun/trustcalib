@@ -134,7 +134,7 @@ uv run pytest                                   # Python tests
 | Paper element | Command | Output | Time |
 |---|---|---|---|
 | Propositions 1–8 (formal proofs) | `cd lean && lake build` | build log (no `sorry`, standard axioms only) | ~1 min with the Mathlib cache |
-| Propositions 2, 4, 5 (numerical checks on the implementation) | `uv run pytest` | test report | seconds |
+| Propositions 2, 4, 5 (numerical checks on the implementation), judge-study sanity checks | `uv run pytest` | test report | seconds |
 | Main comparison and safety-weighted costs (Sec. 6.1) | `uv run python -m experiment.run` | `manuscript/generated/table_main.tex`, `table_safety.tex` | ~1 min (one run makes every output of this row group) |
 | Acquisition probe (Sec. 6.2) | same run | `manuscript/generated/table_acq.tex` | |
 | Generalization to never-labelled actions (Sec. 6.3) | same run | `experiment/figures/transfer.pdf` | |

@@ -7,8 +7,12 @@
 \usepackage{enumitem}
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage{graphicx}
-\usepackage{hyperref}
 \usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,calc}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, citecolor=green!35!black,
+  urlcolor=blue!50!black}
 
 \graphicspath{{../experiment/figures/}}
 \input{generated/results}
@@ -23,13 +27,19 @@
 \newtheorem{remark}{Remark}
 
 \newcommand{\lean}[1]{\texttt{\footnotesize #1}}
+\newcommand{\RQ}[1]{\textbf{RQ#1}}
 \setlength{\emergencystretch}{1.5em}
+
+\definecolor{allowc}{HTML}{0F766E}
+\definecolor{askc}{HTML}{D97706}
+\definecolor{blockc}{HTML}{B91C1C}
 
 \title{\textbf{Progressive Autonomy as Preference Learning}\\[4pt]
 \large A Formalization of Trust Calibration for Agentic Tool Use}
 \author{Changkun Ou\\[2pt]
-\small Latere AI, Munich, Germany}
-\date{September 28, 2026 \quad (version 3)}
+\small Latere AI, Munich, Germany\thanks{Code, simulations and
+machine-checked proofs: \url{https://github.com/changkun/trustcalib}.}}
+\date{September 28, 2026}
 
 \begin{document}
 \maketitle
@@ -63,42 +73,166 @@ machine-checked in Lean~4 with Mathlib. The problem is related to, but not an
 instance of, preferential Bayesian optimization.
 \end{abstract}
 
-\section{Introduction and Related Work}\label{sec:intro}
+% =========================================================================== %
+\section{Introduction}\label{sec:intro}
 
 Coding agents today gate tool calls with a binary switch: run automatically,
 or refuse. A refusal does not pause the run for a human; the agent receives
 it and keeps going, often routing around the obstacle in ways that are worse
 than asking would have been. The missing primitive is not \emph{block} but
-\emph{escalate}, and the point at which to escalate should be learned from
-the supervisor's own approve/deny history rather than written by hand. This
-paper formalizes that learning problem and analyses the decision rule, the
-model of drift, and the evidence the supervisor's labels can and cannot
-provide.
+\emph{escalate}: an action the system is unsure about should go to the
+supervisor, and the point at which to escalate should be learned from the
+supervisor's own approve/deny history rather than written by hand. A
+supervisor who has approved the same test command a hundred times should not
+be asked again; a supervisor who has just moved to an unfamiliar production
+system should be asked more often, even about actions approved yesterday.
 
-\paragraph{Contributions.} (i) We show that the three-tier
-\textsc{allow}/\textsc{ask}/\textsc{block} gateway is exactly Chow's
-reject-option rule \citep{chow1970optimum}, so its thresholds follow in closed
-form from costs and it depends on the posterior only through the mean
-approval probability (Proposition~\ref{prop:chow}); the long-run escalation
-rate is bounded below by the supervisor's own ambiguity
-(Proposition~\ref{prop:floor}). (ii) We show that unary feedback identifies
-the allow/deny boundary while pairwise feedback cannot
-(Proposition~\ref{prop:ident}), which locates the problem precisely relative
-to preferential Bayesian optimization. (iii) We prove that a separable
-time-decaying kernel forgets static risk and forces re-escalation after at
-most $\lambda \ln(m/z)$ label-free steps (Proposition~\ref{prop:forget}), and
-propose an additive decomposition $f(x,t) = \tau(t) - r(x)$ that forgets only
-what drifts. (iv) We treat the selective-labels structure of the gateway,
-where auto-decided actions are never labelled, and show that random audits
-restore unbiased error estimates and give a certification sample size
-(Proposition~\ref{prop:audit}). (v) We extend the gateway to arbitrary shell
-actions judged by an opaque LLM, formalize the two questions such a judge
-raises (is it trustworthy, and how likely is a verdict to be right) and show
-what can and cannot be learned about them (Propositions~\ref{prop:judge-ident}--\ref{prop:judge-ht}).
-(vi) The cores of all eight propositions are machine-checked in Lean~4
-(Section~\ref{sec:lean}). (vii) Simulation studies measure each claim and
-correct several claims of the first version of this paper
-(Appendix~\ref{app:changes}).
+Two developments make this learning problem both more pressing and harder.
+First, agent harnesses increasingly route work through a general-purpose
+shell, so a proposed action is arbitrary code rather than a call to one of a
+known set of tools. Second, the allow/block decision is increasingly delegated
+to a second language model, a \emph{judge} that reads the command and part of
+the conversation and returns a verdict \citep{hughes2026automode,openai2026codex}.
+The judge is opaque to the supervisor, and it raises two questions that a
+fixed permission list never did: is the judge trustworthy, and when it says
+allow or block, how likely is that verdict to be what the supervisor would
+have decided?
+
+This paper formalizes the escalation decision as online Gaussian-process (GP)
+classification with a reject option, learned from the supervisor's
+approve/deny answers, and asks five research questions:
+\begin{enumerate}[label=\textbf{RQ\arabic*}, leftmargin=3.2em, itemsep=1pt, topsep=3pt]
+\item \emph{Decision.} Which decision rule should the gateway apply to its
+  posterior, and where should its thresholds come from?
+\item \emph{Feedback.} Which kind of supervisor feedback identifies the
+  boundary between actions to allow and actions to deny?
+\item \emph{Memory.} What should a model of a drifting supervisor forget, and
+  what does forgetting cost?
+\item \emph{Evaluation.} How can the gateway know its own error rate when the
+  actions it decides alone are never labelled?
+\item \emph{Opaque judges.} When an LLM judge replaces the tool taxonomy, is
+  the judge trustworthy, and how likely is a given verdict to be right?
+\end{enumerate}
+Table~\ref{tab:rq} shows where each question is answered, and
+Figure~\ref{fig:overview} shows the gateway that the answers assemble.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}l>{\raggedright\arraybackslash}p{0.43\linewidth}ll@{}}
+\toprule
+& \textbf{Question} & \textbf{Theory} & \textbf{Experiment} \\
+\midrule
+\RQ1 & Decision rule and thresholds & Props.~\ref{prop:chow}--\ref{prop:floor} (\S\ref{sec:rule}) & \S\ref{sec:exp-burden} \\
+\RQ2 & Feedback that identifies the boundary & Prop.~\ref{prop:ident} (\S\ref{sec:latent}), \S\ref{sec:pbo} & -- \\
+\RQ3 & What to forget under drift & Prop.~\ref{prop:forget} (\S\ref{sec:nonstationary}--\ref{sec:correlated}) & \S\ref{sec:exp-drift} \\
+\RQ4 & Error rates under selective labels & Prop.~\ref{prop:audit} (\S\ref{sec:audit}) & \S\ref{sec:exp-audit} \\
+\RQ5 & Trusting an opaque judge & Props.~\ref{prop:judge-ident}--\ref{prop:judge-ht} (\S\ref{sec:judge}) & \S\ref{sec:exp-judge} \\
+\bottomrule
+\end{tabular}
+\caption{Research questions and where the paper answers them.}
+\label{tab:rq}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+    font=\footnotesize, >={Stealth[length=4.5pt]},
+    box/.style={draw=black!60, rounded corners=2pt, align=center,
+                inner sep=4pt, minimum height=13mm, fill=#1},
+    box/.default=white,
+    out/.style={draw=#1, fill=#1!10, rounded corners=2pt, minimum width=25mm,
+                minimum height=6mm, inner sep=2pt, align=center},
+    note/.style={font=\scriptsize, text=black!70, align=center},
+  ]
+  \node[box] (agent) {Agent\\proposes\\action $x_t$};
+  \node[box, right=4mm of agent] (feat) {Features\\tool attributes,\\or judge verdict};
+  \node[box=black!4, right=4mm of feat] (gp) {GP posterior\\$f = \tau(t) - r(x) + h$\\gives $\hat p_t$};
+  \node[box=black!4, right=4mm of gp] (chow) {Chow rule\\thresholds\\from costs};
+  \node[out=askc, right=8mm of chow] (ask)
+       {\textsc{ask}\ \ {\scriptsize otherwise}};
+  \node[out=allowc, above=3mm of ask] (allow)
+       {\textsc{allow}\ \ {\scriptsize$\hat p_t > \tau_{\text{high}}$}};
+  \node[out=blockc, below=3mm of ask] (block)
+       {\textsc{block}\ \ {\scriptsize$\hat p_t < \tau_{\text{low}}$}};
+  \node[box, right=9mm of ask] (human) {Supervisor\\answers\\$y_t \in \{0,1\}$};
+
+  \draw[->] (agent) -- (feat);
+  \draw[->] (feat) -- (gp);
+  \draw[->] (gp) -- (chow);
+  \draw[->] (chow.east) -- (allow.west);
+  \draw[->] (chow.east) -- (ask.west);
+  \draw[->] (chow.east) -- (block.west);
+  \draw[->, thick, askc] (ask.east) -- (human.west);
+  \draw[->, dashed, black!55] (allow.east) -- (human.north west);
+  \draw[->, dashed, black!55] (block.east) -- (human.south west);
+  \node[note, above=1mm of human] {audit, prob.\ $\varepsilon$};
+  \draw[->, thick, black!70] (human.south) -- ++(0,-11mm) -| (gp.south)
+       node[note, pos=0.25, below=1pt] {label $y_t$ with its propensity $\pi_t \in \{1, \varepsilon\}$};
+\end{tikzpicture}
+\caption{The escalation gateway. Each proposed action is mapped to observable
+features: the attributes of a known tool, or, in a shell-centric harness, an
+opaque judge's verdict and a command category. A GP posterior over the
+supervisor's latent tolerance gives the approval probability $\hat p_t$, and
+Chow's reject-option rule turns it into \textsc{allow}, \textsc{ask} or
+\textsc{block}. Only escalated actions and a random $\varepsilon$ fraction of
+auto-decided ones (audits) are shown to the supervisor; their answers, each
+with its sampling propensity, are the only training labels.}
+\label{fig:overview}
+\end{figure}
+
+\paragraph{Contributions.} The paper makes six contributions.
+\begin{itemize}[leftmargin=1.2em, itemsep=2pt, topsep=3pt]
+\item \emph{Decision rule (\RQ1).} The three-tier
+  \textsc{allow}/\textsc{ask}/\textsc{block} gateway is exactly Chow's
+  reject-option rule \citep{chow1970optimum}: its thresholds follow in closed
+  form from the costs of a false allow, a false block and an escalation, and
+  it depends on the posterior only through the mean approval probability
+  (Proposition~\ref{prop:chow}). Even a perfect posterior escalates every
+  action on which the supervisor is ambivalent at those costs, so the
+  achievable automation rate is a property of the supervisor
+  (Proposition~\ref{prop:floor}).
+\item \emph{Identifiability (\RQ2).} Unary approve/deny feedback identifies
+  the allow/deny boundary; pairwise feedback cannot, because it is invariant
+  to shifting the latent function by a constant (Proposition~\ref{prop:ident}).
+  This places the problem next to, not inside, preferential Bayesian
+  optimization.
+\item \emph{Forgetting (\RQ3).} A separable time-decaying kernel forgets
+  static risk and forces every unlabelled action back into escalation after at
+  most $\lambda \ln(m/z)$ label-free steps (Proposition~\ref{prop:forget}). An
+  additive decomposition of the latent tolerance into static risk and
+  drifting tolerance forgets only what drifts.
+\item \emph{Selective labels (\RQ4).} Auto-decided actions are never labelled,
+  so every error rate computed from the gateway's labels is biased. Random
+  audits restore unbiased estimates, and certifying a false-allow rate below
+  $\alpha$ at confidence $1-\delta$ takes $\ln(1/\delta)/\alpha$ clean audits
+  (Proposition~\ref{prop:audit}).
+\item \emph{Opaque judges (\RQ5).} A judge's error rate for a supervisor is
+  not identifiable from its verdicts, rises when the supervisor becomes
+  stricter, and is estimable only from human labels with known propensities
+  (Propositions~\ref{prop:judge-ident}--\ref{prop:judge-ht}). Treating the
+  judge's output as a feature of the gateway answers the per-verdict question
+  with a calibrated posterior.
+\item \emph{Evidence.} Simulation studies with a known oracle test each claim,
+  one of them pre-registered; the cores of all eight propositions are
+  machine-checked in Lean~4 with Mathlib; code, proofs and a Go
+  implementation for agent harnesses are released.
+\end{itemize}
+
+\paragraph{Outline.} Section~\ref{sec:related} reviews related work.
+Section~\ref{sec:method} develops the gateway and its theory, and
+Section~\ref{sec:judge} extends it to an opaque judge.
+Section~\ref{sec:setup} describes the simulation environment shared by three
+experiments: learning a drifting supervisor (Section~\ref{sec:exp-drift}),
+auditing auto-decisions (Section~\ref{sec:exp-audit}) and calibrating a
+simulated judge (Section~\ref{sec:exp-judge}). Section~\ref{sec:discussion}
+answers the research questions, draws implications for agent harnesses and
+states the limitations. Proofs are in Appendix~\ref{app:proofs}, the
+correspondence to the machine-checked theorems in Appendix~\ref{app:lean},
+and simulation details in Appendix~\ref{app:sim}.
+
+% =========================================================================== %
+\section{Related Work}\label{sec:related}
 
 \paragraph{Selective classification and deferral.} A classifier that may
 abstain at a cost is Chow's reject option \citep{chow1970optimum}, developed
@@ -117,9 +251,7 @@ introduced GP preference learning with a pairwise probit likelihood, and
 \citet{gonzalez2017preferential} embedded preference learning in the query loop
 of Bayesian optimization \citep{brochu2010tutorial,shahriari2016bayesopt},
 placing a GP on the space of duels; \citet{benavoli2026tutorial} survey GP
-preference and choice models. Our observation model is the unary special case
-of this family, but Section~\ref{sec:pbo} shows that the difference from
-pairwise feedback is one of identifiability, not a degenerate special case.
+preference and choice models.
 
 \paragraph{Active learning and level-set estimation.} Choosing which actions to
 send to the human is stream-based selective sampling
@@ -133,16 +265,17 @@ sampling is known to suffer from sampling bias
 \citep{dasgupta2008hierarchical,dasgupta2011two}.
 
 \paragraph{Non-stationarity.} A supervisor's tolerance drifts. Time-varying GP
-bandits model drift with a forgetting kernel
-\citep{bogunovic2016timevarying}, of which our $k_{\text{time}}$ is the
-continuous-time analogue; non-stationary covariances \citep{paciorek2003nonstationary}
-and online changepoint detection \citep{adams2007bocd} are alternatives.
-Additive kernels \citep{duvenaud2011additive} let a model forget some
-components and not others.
+bandits model drift with a forgetting kernel multiplied onto the spatial one
+\citep{bogunovic2016timevarying}, of which our separable kernel is the
+continuous-time analogue; non-stationary covariances
+\citep{paciorek2003nonstationary} and online changepoint detection
+\citep{adams2007bocd} are alternatives. Additive kernels
+\citep{duvenaud2011additive} let a model forget some components and not
+others.
 
 \paragraph{LLM judges and monitors.} Language-model judges now gate agent
-actions in deployed coding agents \citep{hughes2026automode}. Calibrated
-selective evaluation with an agreement guarantee \citep{jung2025trust},
+actions in deployed coding agents \citep{hughes2026automode,openai2026codex}.
+Calibrated selective evaluation with an agreement guarantee \citep{jung2025trust},
 prediction-powered and active inference from few human labels
 \citep{angelopoulos2023ppi,zrnic2024active}, latent-class models of annotator
 error \citep{dawid1979maximum,allman2009identifiability}, and AI control with
@@ -162,7 +295,54 @@ escalation policy as a fixed tier; our contribution is a learning rule for it.
 Because auto-decided actions produce no label, the evaluation of such a rule
 faces the selective-labels problem \citep{lakkaraju2017selective}.
 
-\section{Setup}\label{sec:setup}
+\paragraph{Relation to preferential Bayesian optimization.}\label{sec:pbo}
+Table~\ref{tab:mapping} places the gateway next to preferential Bayesian
+optimization (PBO). The two share a latent function observed through a
+binary-response likelihood and the same approximate inference. They differ in
+three structural ways. First, in PBO the learner chooses the query; here the
+agent's stream chooses the action and the learner only chooses whether to ask
+(stream-based selective sampling). Second, PBO seeks an optimizer, while the
+gateway seeks a level set, $\{x : f(x) > \Phi^{-1}(\tau)\}$. Third, and most
+fundamentally, pairwise data identify $f$ only up to a constant
+(Proposition~\ref{prop:ident}), which suffices to find a maximizer but not a
+threshold. The unary observation model is therefore not a degenerate pairwise
+comparison against a fixed reference point: the reference point is precisely
+what pairwise data cannot supply. We regard the gateway as GP classification
+with a reject option and a level-set objective, a relative of PBO rather than
+an instance of it. (In \citet{gonzalez2017preferential} the GP is placed on
+the duel space $\mathcal X \times \mathcal X$ with a logistic link; the
+difference form $\Phi(f(x_i) - f(x_j))$ is that of \citet{chu2005preference}.)
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Component} & \textbf{PBO} & \textbf{Trust calibration (this paper)} \\
+\midrule
+Input space & design parameters & (action, context, time) \\
+Who picks the query & learner & agent; learner only decides to ask \\
+Feedback & pairwise preference & unary approve/deny \\
+Identified & $f$ up to a constant & $f$ (Prop.~\ref{prop:ident}) \\
+Objective & $\arg\max f$ & level set $\{\hat p > \tau_{\text{high}}\}$ etc. \\
+Decision rule & acquisition function & Chow rule (Prop.~\ref{prop:chow}) \\
+Unlabelled decisions & none & \textsc{allow}/\textsc{block} (selective labels) \\
+\bottomrule
+\end{tabular}
+\caption{Structural comparison with preferential Bayesian optimization.}
+\label{tab:mapping}
+\end{table}
+
+% =========================================================================== %
+\section{Trust Calibration as Classification with a Reject Option}\label{sec:method}
+
+This section builds the gateway of Figure~\ref{fig:overview} for an agent
+with a known tool set: the decision loop, the latent tolerance it learns, the
+GP model, the decision rule, and three structural properties (forgetting,
+correlated generalization and selective labels) that shape what it can
+achieve.
+
+\subsection{The escalation loop}\label{sec:loop}
 
 At each decision point $t = 1, 2, \ldots$, the gateway observes a proposed
 agent action $a_t \in \mathcal{A}$ and an execution context $c_t \in \mathcal{C}$,
@@ -180,7 +360,7 @@ training label; \textsc{allow} and \textsc{block} are executed without a label.
 Decisions are made prequentially: $d_t$ depends only on labels received before
 $t$.
 
-\section{Latent Tolerance and Identifiability}\label{sec:latent}
+\subsection{Latent tolerance and identifiability}\label{sec:latent}
 
 \begin{definition}[Latent tolerance]\label{def:latent}
 There is a latent function $f\colon \mathcal{X} \times \mathbb{R} \to \mathbb{R}$
@@ -199,7 +379,8 @@ The decomposition separates what is a property of the action from what is a
 property of the supervisor: $r$ can be shared across supervisors (and is what
 a static corpus such as R-Judge \citep{yuan-etal-2024-rjudge} could inform),
 while $\tau$ is one-dimensional, per supervisor, and drifts. The split is
-identified only up to a shared constant, which the prior fixes.
+identified only up to a shared constant, which the prior fixes. The first
+question is which feedback identifies what the gateway needs, the sign of $f$.
 
 \begin{proposition}[Unary feedback identifies the boundary; pairwise does not]\label{prop:ident}
 Let $\Phi$ be strictly increasing. (a) If $\Phi(f(x)) = \Phi(g(x))$ for all
@@ -213,12 +394,9 @@ identical pairwise likelihoods for all pairs and the opposite sign at $x$.
 Part (b) says that preference comparisons, however many, cannot tell whether
 an action lies on the allow or the deny side: only its rank relative to other
 actions is observable. Unary approve/deny feedback carries exactly the
-absolute information that pairwise feedback lacks. This corrects the first
-version of this paper, which described the unary model as ``a degenerate
-pairwise comparison against a fixed reference point''; the reference point is
-precisely what pairwise data cannot supply.
+absolute information that pairwise feedback lacks (\RQ2).
 
-\section{Gaussian-Process Prior and Posterior}\label{sec:gp}
+\subsection{Gaussian-process prior and posterior}\label{sec:gp}
 
 We place a GP prior $f \sim \mathcal{GP}(0, k)$ \citep{rasmussen2006gaussian}.
 With feature maps for the action and context, let $k_{\text{tool}}$ and
@@ -232,12 +410,12 @@ and $k_{\text{time}}(t,t') = \exp(-|t-t'|/\lambda)$. We compare two kernels:
      + \sigma_d^2\, k_x(x,x')\, k_{\text{time}}(t,t').
   \label{eq:kadd}
 \end{align}
-The product kernel~\eqref{eq:kprod} was the kernel of the first version. The
-additive kernel~\eqref{eq:kadd} mirrors Definition~\ref{def:latent}: the first
-term is a prior on the static risk $r$, the second on the shared tolerance
-$\tau$ (every label, for any action, updates it), and the third on the
-interaction $h$. Both are positive semidefinite, since sums and Schur products
-of PSD kernels are PSD.
+The product kernel~\eqref{eq:kprod} is the standard separable construction
+for a function that drifts in time. The additive kernel~\eqref{eq:kadd}
+mirrors Definition~\ref{def:latent}: the first term is a prior on the static
+risk $r$, the second on the shared tolerance $\tau$ (every label, for any
+action, updates it), and the third on the interaction $h$. Both are positive
+semidefinite, since sums and Schur products of PSD kernels are PSD.
 
 After observing $\mathcal{D}_N = \{(x_i, t_i, y_i)\}_{i=1}^N$ the posterior
 $p(f \mid \mathcal{D}_N) \propto \mathcal{GP}(0,k)\prod_i
@@ -253,13 +431,13 @@ approximation the predictive approval probability is exactly
 \end{equation}
 The Laplace approximation is known to underestimate the magnitude of the
 posterior mean and so to give over-cautious probabilities
-\citep{kuss2005assessing}; we show in Section~\ref{sec:simulation} that the
+\citep{kuss2005assessing}; Section~\ref{sec:exp-burden} shows that the
 kernel, not the approximation, dominates the calibration error here.
 Hyperparameters can be chosen by maximizing the Laplace marginal likelihood;
-Section~\ref{sec:simulation} shows why this average-case criterion should not
-alone choose the forgetting rate.
+Section~\ref{sec:exp-burden} also shows why this average-case criterion
+should not alone choose the forgetting rate.
 
-\section{The Gateway Decision Rule}\label{sec:gateway}
+\subsection{The decision rule}\label{sec:rule}
 
 Let an erroneous \textsc{allow} cost $c_{\text{FA}}$, an erroneous
 \textsc{block} cost $c_{\text{FB}}$, and one escalation cost $c_{\text{ask}}$,
@@ -290,15 +468,14 @@ strictly so off the two thresholds.
 (d) If it is not, some auto-decision is always at least as good as asking.
 \end{proposition}
 
-The rule of the first version, with band $(0.35, 0.65)$, is exactly this rule
-with symmetric costs $c_{\text{FA}} = c_{\text{FB}} = c_{\text{ask}}/0.35$.
-Asymmetric costs give asymmetric bands: with $c_{\text{FA}} = 10$,
-$c_{\text{FB}} = 4$, $c_{\text{ask}} = 1$ the band is $(0.25, 0.90)$. The
-thresholds are therefore \emph{specified} by the operator, not tuned on data.
-This matters because tuning them needs labels on auto-decided actions, which
-the gateway never obtains (Section~\ref{sec:audit}); the first version tuned
-its test-phase thresholds with the oracle's labels on every validation action,
-information no deployment has.
+A symmetric band $(0.35, 0.65)$, for example, is this rule with
+$c_{\text{FA}} = c_{\text{FB}} = c_{\text{ask}}/0.35$. Asymmetric costs give
+asymmetric bands: with $c_{\text{FA}} = 10$, $c_{\text{FB}} = 4$,
+$c_{\text{ask}} = 1$ the band is $(0.25, 0.90)$. The thresholds are therefore
+\emph{specified} by the operator, not tuned on data (\RQ1). This matters
+because tuning them needs labels on auto-decided actions, which the gateway
+never obtains (Section~\ref{sec:audit}); tuning them on a simulator's oracle
+labels uses information no deployment has.
 
 \begin{proposition}[Escalation floor]\label{prop:floor}
 Let $q(x) = \Phi(f(x))$ be the true approval probability. Any policy that is
@@ -308,25 +485,24 @@ Consequently, for any finite population of actions with nonnegative weights,
 its escalated mass is at least the mass of the open band.
 \end{proposition}
 
-The first version asserted that an 85--90\% auto-approval rate ``emerges
-naturally as the posterior concentrates''. Proposition~\ref{prop:floor}
-replaces that assertion: the achievable automation rate is bounded by the
-supervisor's own ambiguity at the operator's costs, which no learner can
-remove. In our simulation the floor is \resFloorSym\% at the symmetric band
-but \resFloorSafe\% at the safety-weighted band.
+The achievable automation rate is thus bounded by the supervisor's own
+ambiguity at the operator's costs, which no learner can remove; an
+auto-approval rate does not simply ``emerge'' as the posterior concentrates.
+In our simulation the floor is \resFloorSym\% of actions at the symmetric
+band but \resFloorSafe\% at the safety-weighted band.
 
-\begin{remark}[Escalation versus acquisition]
+\begin{remark}[Escalation versus acquisition]\label{rem:voi}
 Proposition~\ref{prop:chow} is a one-step rule: it values the human's answer
 only for the action at hand. An answer also improves future decisions, so a
 fully sequential rule would ask when $c_{\text{ask}} - \mathrm{VOI}(x) <
 \min(L_{\textsc{allow}}, L_{\textsc{block}})$, with $\mathrm{VOI}$ the expected
 reduction in future loss. The \textsc{ask} band is therefore an escalation
 rule first; whether it is also a good acquisition rule is an empirical
-question, and Section~\ref{sec:simulation} shows that the answer depends on
-the kernel.
+question, and Section~\ref{sec:exp-acq} shows that the answer depends on the
+kernel.
 \end{remark}
 
-\begin{remark}[Epistemic margin]
+\begin{remark}[Epistemic margin]\label{rem:margin}
 Because $\hat p = \Phi(\mu/\sqrt{1+\sigma^2})$, large posterior variance
 already pulls $\hat p$ toward $\tfrac12$. An operator who wants an explicit
 margin can instead allow only when $\Pr(\Phi(f_*) > \tau_{\text{high}}) \ge
@@ -335,7 +511,7 @@ $\mu_* - z_{1-\delta}\,\sigma_* > \Phi^{-1}(\tau_{\text{high}})$, a lower
 confidence bound in the style of safe exploration \citep{sui2015safe}.
 \end{remark}
 
-\section{Non-Stationarity and Forgetting}\label{sec:nonstationary}
+\subsection{Drift and forgetting}\label{sec:nonstationary}
 
 The time kernel $k_{\text{time}}$ is the Ornstein--Uhlenbeck covariance: for
 fixed $x$, $f(x,\cdot)$ is a mean-reverting Markov process. It lets recent
@@ -352,33 +528,33 @@ and the variance reduction $\mathbf k_*^\top A\,\mathbf k_*$ (for any fixed $A$)
 decays by $e^{-2\Delta/\lambda}$.
 (b) Hence, if no further labels arrive, $\Phi$ is continuous at $0$ with
 $\Phi(0)=\tfrac12$ and $\tau_{\text{low}} < \tfrac12 < \tau_{\text{high}}$,
-every action is eventually escalated; explicitly, an action with $\mu(x_*,t) = m > 0$ is no longer
-auto-allowed after at most $\lambda \ln(m/z)$ label-free steps, where
+every action is eventually escalated; explicitly, an action with
+$\mu(x_*,t) = m > 0$ is no longer auto-allowed after at most
+$\lambda \ln(m/z)$ label-free steps, where
 $z = \Phi^{-1}(\tau_{\text{high}}) > 0$.
 (c) Under $k_{\text{add}}$, only the time-coupled components decay:
 $\mu(x_*, t+\Delta) \to \sum_i \sigma_s^2\, k_x(x_*, x_i)\,\alpha_i$, the
 static part.
 \end{proposition}
 
-Part~(b) contradicts a claim of the first version, that $k_{\text{time}}$
-``down-weights stale evidence but does not itself generate new probes''. It
-does: every region of the action space that stops receiving labels, directly
-or through its kernel neighbours, drifts back into the band on a fixed clock,
-whether or not the supervisor's tolerance has changed. With
-$\lambda = 90$ and $\tau_{\text{high}} = 0.65$ ($z \approx 0.385$), an action
-with posterior mean $m = 2$ returns within $90 \ln(2/0.385) \approx 148$
-steps. This forced re-escalation is an implicit re-audit, which is useful
-under drift, but it charges the supervisor for the static structure the model
-has already learned and it keeps the posterior close to the prior, which
-makes the gateway underconfident. The additive kernel keeps the static part
-and forgets only the tolerance and the interaction; the price is that it loses
-the implicit re-audit, which Section~\ref{sec:audit} restores explicitly. Note
-also that the Ornstein--Uhlenbeck process is non-directional: it models change,
-not the one-way accumulation of trust. A sliding window of recent
-observations or online changepoint detection \citep{adams2007bocd} are
-alternatives rather than equivalents.
+Part~(b) says that the time kernel does more than down-weight stale evidence:
+it generates new escalations. Every region of the action space that stops
+receiving labels, directly or through its kernel neighbours, drifts back into
+the band on a fixed clock, whether or not the supervisor's tolerance has
+changed. With $\lambda = 90$ and $\tau_{\text{high}} = 0.65$
+($z \approx 0.385$), an action with posterior mean $m = 2$ returns within
+$90 \ln(2/0.385) \approx 148$ steps. This forced re-escalation is an implicit
+re-audit, which is useful under drift, but it charges the supervisor for the
+static structure the model has already learned and it keeps the posterior
+close to the prior, which makes the gateway underconfident. The additive
+kernel keeps the static part and forgets only the tolerance and the
+interaction (\RQ3); the price is that it loses the implicit re-audit, which
+Section~\ref{sec:audit} restores explicitly. The Ornstein--Uhlenbeck process
+is also non-directional: it models change, not the one-way accumulation of
+trust. A sliding window of recent observations or online changepoint
+detection \citep{adams2007bocd} are alternatives rather than equivalents.
 
-\section{Correlated Generalization}\label{sec:correlated}
+\subsection{Correlated generalization}\label{sec:correlated}
 
 A contextual learner that treats each $(a,c)$ cell independently needs labels
 in every cell; the kernel transfers evidence between similar actions. With the
@@ -386,21 +562,20 @@ featurization used here (reversibility, base sensitivity, blast radius and
 category of the tool; target sensitivity, destructive-argument flag and task
 of the context), approving \texttt{write\_file} to \texttt{workspace\_src}
 transfers to \texttt{write\_file} to \texttt{workspace\_tests}. Transfer cuts
-both ways: under the isotropic lengthscales of Section~\ref{sec:simulation}
-the prior correlation of \texttt{git\_push} and \texttt{git\_force\_push} is
-$0.975$ and that of \texttt{write\_file} and \texttt{delete\_file} on the same
-target $0.87$, while moving target sensitivity from a sandbox to production
+both ways: under the isotropic lengthscales of our experiments the prior
+correlation of \texttt{git\_push} and \texttt{git\_force\_push} is $0.975$ and
+that of \texttt{write\_file} and \texttt{delete\_file} on the same target
+$0.87$, while moving target sensitivity from a sandbox to production
 infrastructure changes the context kernel only by a factor $0.71$. Approval
-therefore also propagates toward dangerous neighbours. The claim of the first
-version that ``a new tool with no interaction history inherits the prior
-$\mu_0$, which maps to \textsc{ask}'' holds only for actions far from all
-labelled ones under the kernel; a new action that resembles approved actions
+therefore also propagates toward dangerous neighbours. A new action inherits
+the prior, and with it an escalation, only if it is far from all labelled
+actions under the kernel; a new action that resembles approved actions
 inherits their approval. Per-feature lengthscales, a prior that makes $f$
 decrease in the risk attributes \citep{riihimaki2010gaussian}, or the
-epistemic margin above are the natural remedies; we measure the leak rather
-than fix it here.
+epistemic margin of Remark~\ref{rem:margin} are the natural remedies; we
+measure the leak (Section~\ref{sec:exp-transfer}) rather than fix it here.
 
-\section{Selective Labels and Audits}\label{sec:audit}
+\subsection{Selective labels and audits}\label{sec:audit}
 
 Only escalated actions are labelled. The GP posterior itself is not biased by
 this adaptive design when the model is correctly specified, since the
@@ -423,338 +598,33 @@ $n \ge \ln(1/\delta)/\alpha$.
 \end{proposition}
 
 Part~(b) is the familiar ``rule of three'' made exact: certifying a
-false-allow rate below $1\%$ at $95\%$ confidence takes $300$ clean audits.
-Published evaluations of deployed agent-action classifiers rest on samples of
-this order or smaller; for example, the false-negative rate reported for one
-production classifier on real dangerous actions is estimated from $52$
-examples \citep{hughes2026automode}.
+false-allow rate below $1\%$ at $95\%$ confidence takes $300$ clean audits
+(\RQ4). Published evaluations of deployed agent-action classifiers rest on
+samples of this order or smaller; for example, the false-negative rate
+reported for one production classifier on real dangerous actions is
+estimated from $52$ examples \citep{hughes2026automode}.
 
-\section{Relation to Preferential Bayesian Optimization}\label{sec:pbo}
+% =========================================================================== %
+\section{Calibrating an Opaque LLM Judge}\label{sec:judge}
 
-Table~\ref{tab:mapping} places the gateway next to preferential Bayesian
-optimization (PBO). The two share a latent function observed through a
-binary-response likelihood and the same approximate inference. They differ in
-three structural ways. First, in PBO the learner chooses the query; here the
-agent's stream chooses $x_t$ and the learner only chooses whether to ask
-(stream-based selective sampling). Second, PBO seeks an optimizer, while the
-gateway seeks a level set, $\{x : f(x) > \Phi^{-1}(\tau)\}$. Third, and most
-fundamentally, pairwise data identify $f$ only up to a constant
-(Proposition~\ref{prop:ident}), which suffices to find a maximizer but not a
-threshold. We therefore regard the gateway as GP classification with a reject
-option and a level-set objective, a relative of PBO rather than an instance of
-it. (In \citet{gonzalez2017preferential} the GP is placed on the duel space
-$\mathcal X \times \mathcal X$ with a logistic link; the difference form
-$\Phi(f(x_i) - f(x_j))$ is that of \citet{chu2005preference}.)
+The gateway of Section~\ref{sec:method} assumes a fixed taxonomy of tools
+whose risk attributes are known. When an agent routes its work through a
+general-purpose shell, an action is arbitrary code and no such taxonomy
+exists. This section asks what can be learned about the judge that then makes
+the allow/block decision, and how the gateway can sit on top of it (\RQ5).
 
-\begin{table}[h]
-\centering
-\small
-\begin{tabular}{@{}lll@{}}
-\toprule
-\textbf{Component} & \textbf{PBO} & \textbf{Trust calibration (this paper)} \\
-\midrule
-Input space & design parameters & (action, context, time) \\
-Who picks the query & learner & agent; learner only decides to ask \\
-Feedback & pairwise preference & unary approve/deny \\
-Identified & $f$ up to a constant & $f$ (Prop.~\ref{prop:ident}) \\
-Objective & $\arg\max f$ & level set $\{\hat p > \tau_{\text{high}}\}$ etc. \\
-Decision rule & acquisition function & Chow rule (Prop.~\ref{prop:chow}) \\
-Unlabelled decisions & none & \textsc{allow}/\textsc{block} (selective labels) \\
-\bottomrule
-\end{tabular}
-\caption{Structural comparison with preferential Bayesian optimization.}
-\label{tab:mapping}
-\end{table}
+\subsection{Judges in deployed agent harnesses}\label{sec:judge-deployed}
 
-\section{Datasets and Evaluation}\label{sec:data}
-
-Empirically grounding the gateway requires proposed agent actions paired with
-human approve/deny judgments. R-Judge \citep{yuan-etal-2024-rjudge} supplies
-agent interaction records with human safe/unsafe labels and is a natural
-source for the static risk $r(x)$ of Definition~\ref{def:latent}.
-Agent-SafetyBench \citep{zhang2024agentsafetybench} and ToolEmu
-\citep{ruan2024toolemu} widen coverage, but their labels come from automated
-judges rather than per-action human approval. No public dataset captures the
-longitudinal, per-supervisor signal the tolerance $\tau(t)$ requires, so we
-evaluate in a controlled simulation with a known oracle, the standard
-protocol for GP preference and level-set methods: recovery of the oracle
-means that the inference is correct under the model, not that the world
-behaves like the model.
-
-\section{Simulation Study}\label{sec:simulation}
-
-\paragraph{Protocol.} The action space has $18$ tools with decision-time risk
-attributes, $8$ target-sensitivity tiers and $7$ task contexts. The oracle
-instantiates Definition~\ref{def:latent}: a static acceptability term linear in
-the risk attributes, a saturating trust term with an abrupt reset at
-$t = 750$, a task offset, and a three-way veto (irreversible \emph{and}
-sensitive \emph{and} low trust) that is active for roughly $90$ steps after
-the reset; approvals are $y \sim \mathrm{Bernoulli}(\Phi(f^*))$. The kernels
-see the risk attributes but never the trust state or the veto. Each run
-processes $N = 1500$ decisions prequentially; $[0, 560)$ is warm-up and the
-rest is scored, split into an early phase containing the reset and a late
-phase. Thresholds come from costs, never from labels: the symmetric band
-$(0.35, 0.65)$ and the safety-weighted band $(0.25, 0.90)$. The headline
-metric is \emph{regret}: the mean Chow loss of the gateway's decisions minus
-that of the oracle policy that knows $\Phi(f^*)$, in units of one escalation.
-We compare the first version's product kernel ($\sigma^2 = 1.6$,
-$\lambda = 90$), the additive kernel with a configuration fixed before any
-version-2 run ($\sigma_s^2 = 1.6$, $\sigma_g^2 = 1.0$, $\sigma_d^2 = 0.6$,
-$\lambda = 90$), evidence-selected variants of both, a Bayesian linear probit
-with the same shared drift term (the oracle's static term is linear in the
-features by construction), a per-cell Beta-Bernoulli learner (one estimate per
-tool, target and task) and the first version's per-tool baseline. Lengthscales
-are $1.1$ (tool) and $1.2$ (context) throughout. Tables use $10$ seeds; the
-acquisition probe uses $20$ paired seeds. All numbers are generated by the
-released code.
-
-\begin{table}[tb]
-\centering
-\small
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}lcccccc@{}}
-\toprule
-\textbf{Model} & \textbf{Regret} & \textbf{ASK \%} & \textbf{Auto acc.\ \%}
- & \textbf{False-allow \%} & \textbf{ECE} & \textbf{Veto ALLOW} \\
-\midrule
-\TabMain
-\bottomrule
-\end{tabular}
-\caption{Symmetric costs, no audits, scored phases, mean over 10 seeds.
-Regret is the cost-weighted headline; ASK, accuracy and false-allow (share of
-\textsc{allow}s the oracle would deny) are its components. The last column
-pools, over seeds, the \textsc{allow}s among the few actions for which the
-veto is active; read it as directional. The perfect-posterior escalation floor
-is \resFloorSym\%.}
-\label{tab:main}
-\end{table}
-
-\paragraph{The additive kernel halves the human burden.}
-Table~\ref{tab:main} gives the main comparison. Replacing the product kernel by
-the additive one cuts regret from \resVRegret{} to \resARegret{}, human labels
-from \resVLabels\% to \resALabels\% of actions (a \resABurden$\times$ rather
-than \resVBurden$\times$ reduction relative to escalating everything), and the
-calibration error from \resVEce{} to \resAEce{}, with a false-allow rate of
-\resAFA\% against \resVFA\%. The price is auto-decision accuracy, which falls
-from \resVAcc\% to \resAAcc\%, because the additive gateway auto-decides many
-more contestable actions. In the late phase the additive gateway escalates
-\resAAskLate\% of actions against a floor of \resFloorSym\%; the product
-gateway escalates \resVAskLate\%. Because the oracle is itself additive, the
-size of this advantage is indicative; what should transfer is the structural
-point that only the drifting components of a model should be forgotten. The
-simple baselines show why a structured
-model is needed at all: the per-tool learner auto-decides everything at
-\resTAcc\% accuracy (regret \resTRegret), and the per-cell learner, which
-needs a label in every cell, reaches \resCAcc\% (regret \resCRegret).
-
-\paragraph{The linear baseline and the interaction.}
-The Bayesian linear probit with the same shared drift is competitive on
-average metrics (regret \resLRegret, ECE \resLEce), which is expected because
-the oracle's static term is linear in the features by construction. It cannot
-represent the veto interaction, and it allows \resLVeto{} veto-window actions
-against \resAVeto{} for the additive kernel. We read this as evidence that the
-kernel's structure (what is forgotten) matters more than its flexibility for
-average burden, while the non-parametric interaction term earns its keep on
-the rare, safety-relevant region; on real data the linear static term is
-unlikely to be correct.
-
-\paragraph{Evidence selection optimizes average fit, not tail safety.}
-On the labels the first-version gateway collected, the Laplace marginal
-likelihood ranks the first-version kernel last (mean log evidence $\resEvV$
-against $\resEvA$ for the additive kernel, with the linear probit best in
-\resEvLWins{} of 10 seeds; this is evidence under a selected design, since
-only escalated actions are labelled). Selecting hyperparameters
-by evidence during the run chooses long memories (typically $\lambda = 480$
-for the additive and $480$--$960$ for the product kernel) and improves
-calibration, but it nearly doubles veto-window allows for the additive kernel
-(\resAEVeto{} against \resAVeto). The marginal likelihood is an average-case
-criterion and the veto window holds about one percent of scored actions: it is
-a good criterion for structure and a poor one, on its own, for memory length.
-We therefore keep the pre-specified $\lambda = 90$.
-
-\begin{table}[tb]
-\centering
-\small
-\begin{tabular}{@{}lccc@{}}
-\toprule
-\textbf{Model} & \textbf{ASK \%} & \textbf{Auto acc.\ \%} & \textbf{Regret} \\
-\midrule
-\TabSafety
-\bottomrule
-\end{tabular}
-\caption{Safety-weighted costs ($c_{\text{FA}}=10$, $c_{\text{FB}}=4$,
-$c_{\text{ask}}=1$; band $(0.25, 0.90)$), 10 seeds. Floor: \resFloorSafe\%.}
-\label{tab:safety}
-\end{table}
-
-\paragraph{Forgetting makes a high-confidence bar unreachable.}
-Under safety-weighted costs (Table~\ref{tab:safety}) the product gateway
-escalates \resSafeVAsk\% of all actions (regret \resSafeVRegret): its
-posterior never becomes confident enough to clear $\hat p > 0.9$, because
-every action it stops asking about decays toward $\hat p = \tfrac12$
-(Proposition~\ref{prop:forget}). The additive gateway escalates
-\resSafeAAsk\% (regret \resSafeARegret) against a floor of \resFloorSafe\%.
-Figure~\ref{fig:forget} (left) isolates the mechanism: with the training set
-fixed, the product kernel's prediction for a benign \texttt{read\_file}
-decays from \resForgetStart{} to \resForgetProdEnd{} as the time since the
-last label grows, while the additive kernel's settles at its static part,
-\resForgetAddEnd.
-
-\begin{figure}[tb]
-\centering
-\includegraphics[width=\linewidth]{policy_evolution.pdf}
-\caption{Rolling policy mix for one seed. Left: the first version's product
-kernel; right: the additive kernel. The dashed line is the trust reset at
-$t=750$, the dotted line the end of the warm-up.}
-\label{fig:gateway}
-\end{figure}
-
-\begin{figure}[tb]
-\centering
-\includegraphics[width=0.49\linewidth]{forgetting.pdf}\hfill
-\includegraphics[width=0.49\linewidth]{drift_tracking.pdf}
-\caption{Left: Proposition~\ref{prop:forget} on a fixed training set; the
-product kernel returns every action to $\hat p = \tfrac12$, inside the band,
-while the additive kernel keeps the static part. Right: a fixed probe action
-under drift and the reset; both kernels track the reset, the additive one
-from a less underconfident level.}
-\label{fig:forget}
-\end{figure}
-
-\paragraph{Why uncertainty-targeted querying failed, and why it now works.}
-The first version reported that querying inside the \textsc{ask} band was no
-more sample-efficient than random querying at a matched budget, attributed
-this to class imbalance, and proposed an information-theoretic acquisition
-rule as the remedy. Table~\ref{tab:acq} tests both claims with $20$ paired
-seeds. With the product kernel the band is indeed no better than random
-($\resAcqVSGap$ and $\resAcqVCGap$ percentage points of prequential accuracy on
-contestable actions, standard errors \resAcqVSSe{} and \resAcqVCSe), on both a
-fully stationary oracle and the reset oracle, so non-stationarity was never
-the cause. With the additive kernel the same band beats random by
-$\resAcqASGap$ ($\pm$\resAcqASSe) and $\resAcqACGap$ ($\pm$\resAcqACSe) points.
-A stream-based BALD sampler \citep{houlsby2011bayesian}, which labels actions
-whose epistemic information is in the top fraction of a recent window, does
-not improve on the band under either kernel. We therefore retract both parts
-of the first version's explanation: the controlling variable is forgetting,
-and the fix is the kernel, not the acquisition rule. We also retract a claim
-made in our own review of the first version, that the band fails because it
-spends labels on intrinsically ambiguous actions: under the product kernel the
-band does place \resPlaceBandAmb\% of its labels on actions with true approval
-probability in $[0.35, 0.65]$ (base rate \resPlaceBaseAmb\%), at the same mean
-posterior variance as random querying (\resPlaceBandVar{} against
-\resPlaceRandomVar), but under the additive kernel it places even more of its
-labels there and still beats random.
-
-\begin{table}[tb]
-\centering
-\small
-\begin{tabular}{@{}llccccc@{}}
-\toprule
-\textbf{Kernel} & \textbf{Oracle} & \textbf{Band} & \textbf{Random} & \textbf{BALD}
- & \textbf{Band$-$random} & \textbf{BALD$-$random} \\
-\midrule
-\TabAcq
-\bottomrule
-\end{tabular}
-\caption{Acquisition probe: prequential accuracy (\%) on contestable actions
-($\Phi(f^*) \in [0.15, 0.85]$) at a matched label budget; differences in
-percentage points $\pm$ paired standard error over 20 seeds.}
-\label{tab:acq}
-\end{table}
-
-\begin{table}[tb]
-\centering
-\small
-\resizebox{\linewidth}{!}{%
-\begin{tabular}{@{}lccccc@{}}
-\toprule
-\textbf{Model} & \textbf{Labels/action \%} & \textbf{Regret (audit billed)} & \textbf{Veto ALLOW}
- & \textbf{HT est./truth \%} & \textbf{CI covers} \\
-\midrule
-\TabAudit
-\bottomrule
-\end{tabular}}
-\caption{Random audits of $\varepsilon = 5\%$ of auto-decided actions,
-symmetric costs, 10 seeds; arrows show no audits $\to$ audits. Regret
-charges decisions only, so audits are free in it; the value in parentheses
-bills each audit as one escalation. The last
-columns compare the Horvitz--Thompson estimate of the realized false-allow
-rate with its true value, and give the share of seeds whose Jeffreys 95\%
-interval on the audited fraction covers the truth.}
-\label{tab:audit}
-\end{table}
-
-\paragraph{Audits.} Table~\ref{tab:audit} adds random audits at
-$\varepsilon = 5\%$. For the additive gateway they raise labels per action
-from \resALabels\% to \resAudALabels\% and halve veto-window allows
-(\resAVeto{} $\to$ \resAudAVeto); for the linear baseline they cut
-veto-window allows from \resLVeto{} to \resAudLVeto. Regret as defined charges
-decisions only, so an audit of an auto-decided action is free in it; on that
-measure the additive gateway's regret falls from \resARegret{} to
-\resAudARegret. Billing each audit as one escalation, it rises to
-\resAudACharged{} instead: audits pay for themselves in average regret only if
-one costs at most \resAudABreakEven{} of an escalation, which a post-hoc
-review may or may not. Audits are justified by what they make estimable and by
-the veto-window safety, not by average regret. The Horvitz--Thompson estimate of the realized false-allow rate
-is \resAudAEst\% against a true \resAudATruth\%, and a Jeffreys interval on the
-audited fraction covers the truth in \resAudACover\% of seeds. With about forty
-audits per seed the estimate is noisy, as Proposition~\ref{prop:audit}(b)
-predicts: audits make the error rate estimable, not small.
-
-\paragraph{Correlated generalization cuts both ways.}
-We hold out two combinations and never label them. On the benign
-\texttt{write\_file} $\to$ \texttt{workspace\_tests} the additive gateway
-auto-decides \resHoldABCorrect\% of occurrences correctly by kernel transfer
-(product \resHoldVBCorrect\%, per-cell \resHoldCBCorrect\%, since it must ask
-about every unseen cell). On the dangerous \texttt{git\_force\_push} $\to$
-\texttt{prod\_infra}, where the oracle denies \resHoldADDeny{} of the
-occurrences, every kernel model wrongly allows some: \resHoldADFA{} (additive),
-\resHoldVDFA{} (product) and \resHoldLDFA{} (linear), against \resHoldTDFA{}
-for the per-tool learner, which has labels on the same tool at other targets,
-and none for the per-cell learner, which asks. Figure~\ref{fig:transfer}
-shows both directions. This is the leak Section~\ref{sec:correlated}
-predicts; we report it rather than tune it away.
-
-\begin{figure}[tb]
-\centering
-\includegraphics[width=\linewidth]{transfer.pdf}
-\caption{Held-out combinations that are never labelled; prequential decisions
-over 10 seeds. Left: benign transfer. Right: a dangerous combination; red bars
-are the share of the oracle's denials that were auto-allowed.}
-\label{fig:transfer}
-\end{figure}
-
-\begin{figure}[tb]
-\centering
-\includegraphics[width=0.49\linewidth]{query_savings.pdf}\hfill
-\includegraphics[width=0.45\linewidth]{calibration.pdf}
-\caption{Left: cumulative human labels for one seed against escalating every
-action. Right: reliability of $\hat p$ against the true approval probability
-(one seed, scored phases).}
-\label{fig:savings}
-\end{figure}
-
-\section{Beyond a Known Tool Set: Calibrating an Opaque Judge}\label{sec:judge}
-
-The gateway above assumes a fixed taxonomy of tools whose risk attributes are
-known. Current agent harnesses increasingly route work through a
-general-purpose shell, so an action is arbitrary code and no fixed taxonomy
-exists. In practice the \textsc{ask} decision is then delegated to a second
-model, an LLM \emph{judge}. In Claude Code's auto mode, for example, a
-transcript classifier reviews shell commands, web fetches, external tool
-calls and filesystem operations outside the project (read-only tools and
-in-project edits skip it); it ``sees only user messages and the agent's tool
-calls'', with the agent's own messages and tool outputs removed; it returns
-allow or block, a block comes back to the agent as a tool result telling it
-to find a safer path, and the human is asked only after three consecutive or
-twenty total blocks \citep{hughes2026automode}. Its reported false-positive
-rate is $0.4\%$ on $10{,}000$ real actions and its false-negative rate $17\%$
-on $52$ real overeager actions and $5.7\%$ on $1{,}000$ synthetic exfiltration
-attempts \citep{hughes2026automode}. Two questions follow: is the judge
-trustworthy, and when it says allow or block, how likely is that verdict to be
-what the supervisor would have decided? The judge is a black box; only its
-verdict (or score) and, on some actions, the supervisor's decision are
-observable.
+In Claude Code's auto mode, a transcript classifier reviews shell commands,
+web fetches, external tool calls and filesystem operations outside the
+project (read-only tools and in-project edits skip it); it ``sees only user
+messages and the agent's tool calls'', with the agent's own messages and tool
+outputs removed; it returns allow or block, a block comes back to the agent as
+a tool result telling it to find a safer path, and the human is asked only
+after three consecutive or twenty total blocks \citep{hughes2026automode}. Its
+reported false-positive rate is $0.4\%$ on $10{,}000$ real actions and its
+false-negative rate $17\%$ on $52$ real overeager actions and $5.7\%$ on
+$1{,}000$ synthetic exfiltration attempts \citep{hughes2026automode}.
 
 OpenAI's open-source Codex CLI makes different choices
 \citep{openai2026codex}. Its auto-review reviewer is a sub-agent consulted
@@ -765,15 +635,18 @@ the agent's reasoning; everything other than user and developer messages is
 marked as untrusted evidence, and the reviewer may run read-only commands to
 investigate. It returns allow or deny with an optional risk level, and its
 experimental asynchronous pre-scorer maps a single output token to a score of
-$0$ or $1$. A denial returns to the agent as a rejection, and three consecutive
-denials, or ten among the last fifty reviews, interrupt the turn. The two
-designs sit at opposite ends of a trade-off in the judge's view: a
+$0$ or $1$. A denial returns to the agent as a rejection, and three
+consecutive denials, or ten among the last fifty reviews, interrupt the turn.
+
+The two designs sit at opposite ends of a trade-off in the judge's view: a
 reasoning-blind view limits what injected text can reach the judge, while a
 fuller view exposes more of the context that separates safe from unsafe
 actions, and more untrusted text with it. Neither exposes a calibrated score,
-and neither routes judge-allowed actions to a human, which is why the
-verdict-only condition of our simulation is the realistic one and why audits
-are needed below.
+and neither routes judge-allowed actions to a human. In both, the judge is a
+black box: only its verdict and, on some actions, the supervisor's decision
+are observable.
+
+\subsection{What can be known about a judge}\label{sec:judge-theory}
 
 \begin{definition}[Judge reliability for a supervisor]\label{def:judge}
 For a judge $J$ with verdicts in $\{\textsc{allow}, \textsc{block}\}$ and a
@@ -787,6 +660,10 @@ reliability of an individual verdict is the posterior
 $\hat p\bigl(J(x), z(x), t\bigr) = \Pr(y = 1 \mid J(x), z(x), t, \mathcal D)$
 given the verdict, cheap observable features $z$ and the labels so far.
 \end{definition}
+
+Definition~\ref{def:judge} turns the two questions into two quantities: a
+period-level error rate (is the judge trustworthy?) and a per-action
+posterior (how likely is this verdict to be right?).
 
 \begin{proposition}[What cannot be learned without paired labels]\label{prop:judge-ident}
 (a) For every judge allow rate $a \in (0,1)$ and every $\varphi \in [0,1]$
@@ -807,7 +684,7 @@ models are strongly correlated \citep{kim2025correlated,goel2025great}.
 
 \begin{proposition}[Reliability is relational]\label{prop:judge-rel}
 Fix a judge, i.e.\ the set $A$ of actions it allows, and a finite population
-with nonnegative weights. If supervisor $q'$ is nowhere more permissive than
+with nonnegative weights and positive total weight on $A$. If supervisor $q'$ is nowhere more permissive than
 supervisor $q$ on $A$, the judge's false-allow rate for $q'$ is at least its
 false-allow rate for $q$.
 \end{proposition}
@@ -833,44 +710,382 @@ Proposition~\ref{prop:judge-ht} generalizes Proposition~\ref{prop:audit}(a) and
 lets escalations and audits both count, provided each label's propensity is
 logged; this is the logic of active and prediction-powered inference
 \citep{zrnic2024active,angelopoulos2023ppi}. In a design where the human sees
-an action only after repeated judge blocks, labels exist only for blocked
-actions, every propensity on judge-allowed actions is zero, and
-$\mathrm{FA}_J$ is not estimable at all.
+an action only after repeated judge blocks, as in both deployed designs above,
+labels exist only for blocked actions, every propensity on judge-allowed
+actions is zero, and $\mathrm{FA}_J$ is not estimable at all.
 
-\paragraph{A calibrated gateway on top of the judge.} We therefore treat the
-judge's output as a feature rather than a decision. The gateway of
-Sections~\ref{sec:gp}--\ref{sec:audit} runs on $\bigl(J(x)$ or its score,
-a coarse command category $z(x)$, $t\bigr)$ with the additive kernel: its
-static part learns how this supervisor's approvals relate to the judge's
-output in each category, and its time part tracks the supervisor's tolerance.
-Its posterior $\hat p$ answers the second question per action; its Chow rule
-escalates rather than blocks where the judge's verdict is unreliable for this
-supervisor; and audits with logged propensities keep $\mathrm{FA}_J$
-estimable. One limit is structural: the gateway cannot separate actions that
-look identical in its own features, so it cannot repair a judge blind spot its
-features do not expose. Argument-level features (for example static patterns
-in the command, as in the Go port's shell heuristics) are the remedy, not
-more calibration. The released Go port implements this gateway for real
-harnesses: a featurizer over the judge's verdict and a command category,
-cost-derived thresholds, and audits whose sampling propensities are logged
-with each label.
+\subsection{A calibrated gateway over judge outputs}\label{sec:judge-gateway}
 
-\paragraph{Simulation.} We keep the oracle, stream and seeds of
-Section~\ref{sec:simulation} and add a judge, with every setting fixed in a
-pre-registration committed before the first run (no deviations). The judge
-sees the action's static risk but not the supervisor's trust state, task
-preferences or veto; it blocks when a noisy score of the risk exceeds a fixed
-threshold, and it has a blind spot: destructive shell commands look benign to
-it. The gateway sees only the judge's verdict (or score), an eight-way command
-category and time. This simulated judge is much stricter than the production
-classifier: it blocks about a quarter of all actions, most of which this
-supervisor would approve, against a reported false-positive rate of $0.4\%$.
-Gains from turning its blocks into escalations are therefore dominated by
-avoided false blocks and reflect the pre-registered threshold rather than a
-prediction about any deployed system; the relational and estimation results
-below do not depend on it.
+We therefore treat the judge's output as a feature rather than a decision
+(Figure~\ref{fig:overview}). The gateway of Section~\ref{sec:method} runs on
+$\bigl(J(x)$ or its score, a coarse command category $z(x)$, $t\bigr)$ with
+the additive kernel: its static part learns how this supervisor's approvals
+relate to the judge's output in each category, and its time part tracks the
+supervisor's tolerance. Its posterior $\hat p$ answers the per-verdict
+question; its Chow rule escalates rather than blocks where the judge's
+verdict is unreliable for this supervisor; and audits with logged propensities
+keep $\mathrm{FA}_J$ estimable. One limit is structural: the gateway cannot
+separate actions that look identical in its own features, so it cannot repair
+a judge blind spot its features do not expose. Argument-level features, for
+example static patterns in the command, are the remedy, not more calibration.
 
-\begin{table}[tb]
+% =========================================================================== %
+\section{Experimental Setup}\label{sec:setup}
+
+\paragraph{Why simulation.} Empirically grounding the gateway requires
+proposed agent actions paired with human approve/deny judgments. R-Judge
+\citep{yuan-etal-2024-rjudge} supplies agent interaction records with human
+safe/unsafe labels and is a natural source for the static risk $r(x)$ of
+Definition~\ref{def:latent}. Agent-SafetyBench \citep{zhang2024agentsafetybench}
+and ToolEmu \citep{ruan2024toolemu} widen coverage, but their labels come from
+automated judges rather than per-action human approval. No public dataset
+captures the longitudinal, per-supervisor signal the tolerance $\tau(t)$
+requires, so we evaluate in a controlled simulation with a known oracle, the
+standard protocol for GP preference and level-set methods. Recovery of the
+oracle means that the inference is correct under the model, not that the
+world behaves like the model.
+
+\paragraph{Environment.} The action space has $18$ tools with decision-time
+risk attributes, $8$ target-sensitivity tiers and $7$ task contexts. The
+oracle instantiates Definition~\ref{def:latent}: a static acceptability term
+linear in the risk attributes, a saturating trust term with an abrupt reset
+at $t = 750$ (the supervisor moves to an unfamiliar system), a task offset,
+and a three-way veto (irreversible \emph{and} sensitive \emph{and} low trust)
+that is active for roughly $90$ steps after the reset; approvals are
+$y \sim \mathrm{Bernoulli}(\Phi(f^*))$. The kernels see the risk attributes
+but never the trust state or the veto. Appendix~\ref{app:sim} gives the full
+specification.
+
+\paragraph{Protocol and metrics.} Each run processes $N = 1500$ decisions
+prequentially; $[0, 560)$ is warm-up and the rest is scored, split into an
+early phase containing the reset, $[560, 1050)$, and a late phase,
+$[1050, 1500)$. Thresholds come from costs, never from labels: the symmetric
+band $(0.35, 0.65)$ and the safety-weighted band $(0.25, 0.90)$ of
+Section~\ref{sec:rule}. The headline metric is \emph{regret}: the mean Chow
+loss of the gateway's decisions minus that of the oracle policy that knows
+$\Phi(f^*)$, in units of one escalation. We also report the share of actions
+escalated (\textsc{ask}), the accuracy of auto-decisions, the false-allow
+rate (share of \textsc{allow}s the oracle would deny), the expected
+calibration error (ECE) of $\hat p$ against $\Phi(f^*)$, and the number of
+\textsc{allow}s among the few actions for which the veto is active.
+
+\paragraph{Models.} We compare the product kernel ($\sigma^2 = 1.6$,
+$\lambda = 90$); the additive kernel, with a configuration fixed before any
+run ($\sigma_s^2 = 1.6$, $\sigma_g^2 = 1.0$, $\sigma_d^2 = 0.6$,
+$\lambda = 90$); evidence-selected variants of both; a Bayesian linear probit
+with the same shared drift term (the oracle's static term is linear in the
+features by construction, so this baseline is favoured); a per-cell
+Beta-Bernoulli learner (one estimate per tool, target and task); and a
+per-tool Beta-Bernoulli learner. Lengthscales are $1.1$ (tool) and $1.2$
+(context) throughout. Tables use $10$ seeds; the acquisition probe uses $20$
+paired seeds. All numbers in the paper are generated by the released code.
+
+% =========================================================================== %
+\section{Learning a Drifting Supervisor}\label{sec:exp-drift}
+
+The first experiment asks what the choice of kernel, and in particular what
+it forgets, does to the human burden, to safety under drift, to the value of
+the \textsc{ask} band as an acquisition rule, and to generalization to actions
+that are never labelled (\RQ1, \RQ3).
+
+\subsection{Kernel structure and human burden}\label{sec:exp-burden}
+
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+\textbf{Model} & \textbf{Regret} & \textbf{ASK \%} & \textbf{Auto acc.\ \%}
+ & \textbf{False-allow \%} & \textbf{ECE} & \textbf{Veto ALLOW} \\
+\midrule
+\TabMain
+\bottomrule
+\end{tabular}
+\caption{Learning a drifting supervisor under symmetric costs, no audits,
+scored phases, mean over 10 seeds. Regret is the cost-weighted headline;
+ASK, accuracy and false-allow (share of \textsc{allow}s the oracle would deny)
+are its components. The last column pools, over seeds, the \textsc{allow}s
+among the few actions for which the veto is active; read it as directional.
+The perfect-posterior escalation floor is \resFloorSym\%.}
+\label{tab:main}
+\end{table}
+
+\paragraph{The additive kernel halves the human burden.}
+Table~\ref{tab:main} gives the main comparison. Replacing the product kernel by
+the additive one cuts regret from \resVRegret{} to \resARegret{}, human labels
+from \resVLabels\% to \resALabels\% of actions (a \resABurden$\times$ rather
+than \resVBurden$\times$ reduction relative to escalating everything), and the
+calibration error from \resVEce{} to \resAEce{}, with a false-allow rate of
+\resAFA\% against \resVFA\%. The price is auto-decision accuracy, which falls
+from \resVAcc\% to \resAAcc\%, because the additive gateway auto-decides many
+more contestable actions. In the late phase the additive gateway escalates
+\resAAskLate\% of actions against a floor of \resFloorSym\%; the product
+gateway escalates \resVAskLate\%. Figure~\ref{fig:policy} shows where the
+difference comes from: the product gateway keeps returning actions to
+\textsc{ask} long after the supervisor's tolerance has settled. Because the
+oracle is itself additive, the size of this advantage is indicative; what
+should transfer is the structural point that only the drifting components of
+a model should be forgotten. The simple baselines show why a structured model
+is needed at all: the per-tool learner auto-decides everything at
+\resTAcc\% accuracy (regret \resTRegret), and the per-cell learner, which
+needs a label in every cell, reaches \resCAcc\% (regret \resCRegret).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{policy_evolution.pdf}
+\caption{How the gateway's decisions evolve under symmetric costs (one seed;
+rolling shares over 70 decisions). (a)~The product kernel escalates a large
+share of actions throughout, because every action it stops asking about
+decays back into the band; after the supervisor's trust reset it turns most
+of its allows into escalations. (b)~The additive kernel escalates less once
+the static risk is learned, and after the reset it blocks, rather than asks
+about, many of the actions the veto makes unacceptable.}
+\label{fig:policy}
+\end{figure}
+
+\paragraph{Forgetting makes a high-confidence bar unreachable.}
+Under safety-weighted costs (Table~\ref{tab:safety}) the product gateway
+escalates \resSafeVAsk\% of all actions (regret \resSafeVRegret): its
+posterior never becomes confident enough to clear $\hat p > 0.9$, because
+every action it stops asking about decays toward $\hat p = \tfrac12$
+(Proposition~\ref{prop:forget}). The additive gateway escalates
+\resSafeAAsk\% (regret \resSafeARegret) against a floor of \resFloorSafe\%.
+Figure~\ref{fig:forget}(a) isolates the mechanism: with the training set
+fixed, the product kernel's prediction for a benign \texttt{read\_file}
+decays from \resForgetStart{} to \resForgetProdEnd{} as the time since the
+last label grows, while the additive kernel's settles at its static part,
+\resForgetAddEnd. Panels (b) and (c) show the consequence under drift: both
+kernels follow the reset, but the product kernel tracks a fixed probe action
+from further below the truth and is the more underconfident of the two.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Model} & \textbf{ASK \%} & \textbf{Auto acc.\ \%} & \textbf{Regret} \\
+\midrule
+\TabSafety
+\bottomrule
+\end{tabular}
+\caption{Safety-weighted costs ($c_{\text{FA}}=10$, $c_{\text{FB}}=4$,
+$c_{\text{ask}}=1$; band $(0.25, 0.90)$), 10 seeds. Floor: \resFloorSafe\%.}
+\label{tab:safety}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{forgetting.pdf}
+\caption{Forgetting and its cost. (a)~Proposition~\ref{prop:forget} on a
+fixed training set: as the time since the last label grows, the product
+kernel returns every action to $\hat p = \tfrac12$, inside the \textsc{ask}
+band, while the additive kernel keeps the static part. (b)~A fixed probe
+action under drift and the trust reset at $t = 750$: the oracle's approval
+probability and each kernel's $\hat p$ (mean and interquartile range over 10
+seeds). (c)~Reliability of $\hat p$ against the true approval probability,
+pooled over 10 seeds and the scored phases; points above the diagonal are
+underconfident.}
+\label{fig:forget}
+\end{figure}
+
+\paragraph{The linear baseline and the interaction.}
+The Bayesian linear probit with the same shared drift is competitive on
+average metrics (regret \resLRegret, ECE \resLEce), which is expected because
+the oracle's static term is linear in the features by construction. It cannot
+represent the veto interaction, and it allows \resLVeto{} veto-window actions
+against \resAVeto{} for the additive kernel. The kernel's structure (what is
+forgotten) thus matters more than its flexibility for average burden, while
+the non-parametric interaction term earns its keep on the rare,
+safety-relevant region; on real data the linear static term is unlikely to be
+correct.
+
+\paragraph{Evidence selection optimizes average fit, not tail safety.}
+On the labels the product-kernel gateway collected, the Laplace marginal
+likelihood ranks the product kernel last (mean log evidence $\resEvV$
+against $\resEvA$ for the additive kernel, with the linear probit best in
+\resEvLWins{} of 10 seeds; this is evidence under a selected design, since
+only escalated actions are labelled). Selecting hyperparameters by evidence
+during the run chooses long memories (typically $\lambda = 480$ for the
+additive and $480$--$960$ for the product kernel) and improves calibration,
+but it nearly doubles veto-window allows for the additive kernel
+(\resAEVeto{} against \resAVeto). The marginal likelihood is an average-case
+criterion and the veto window holds about one percent of scored actions: it
+is a good criterion for structure and a poor one, on its own, for memory
+length. We therefore keep the pre-specified $\lambda = 90$.
+
+\paragraph{Takeaway.} Thresholds from stated costs work without any tuning
+labels (\RQ1), and what the model forgets decides the human burden (\RQ3):
+forgetting static risk roughly doubles it and makes a demanding confidence bar
+unreachable.
+
+\subsection{Is the ASK band a good acquisition rule?}\label{sec:exp-acq}
+
+Remark~\ref{rem:voi} separates escalation from acquisition: the band is the
+right place to ask for the action at hand, but not necessarily the right
+place to collect labels for the model. We compare, at a matched label budget
+and with $20$ paired seeds, three query strategies: the band itself, uniform
+random querying, and a stream-based BALD sampler \citep{houlsby2011bayesian}
+that labels actions whose epistemic information is in the top fraction of a
+recent window. The outcome is prequential accuracy on contestable actions,
+those with $\Phi(f^*) \in [0.15, 0.85]$, where learning matters.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}llccccc@{}}
+\toprule
+\textbf{Kernel} & \textbf{Oracle} & \textbf{Band} & \textbf{Random} & \textbf{BALD}
+ & \textbf{Band$-$random} & \textbf{BALD$-$random} \\
+\midrule
+\TabAcq
+\bottomrule
+\end{tabular}
+\caption{Is the \textsc{ask} band a good acquisition rule? Prequential
+accuracy (\%) on contestable actions ($\Phi(f^*) \in [0.15, 0.85]$) at a
+matched label budget; differences in percentage points $\pm$ paired standard
+error over 20 seeds.}
+\label{tab:acq}
+\end{table}
+
+\paragraph{Results.} With the product kernel the band is no better than random
+(Table~\ref{tab:acq}; $\resAcqVSGap$ and $\resAcqVCGap$ percentage points,
+standard errors \resAcqVSSe{} and \resAcqVCSe), on both a fully stationary
+oracle and the reset oracle, so non-stationarity is not the cause. With the
+additive kernel the same band beats random by $\resAcqASGap$
+($\pm$\resAcqASSe) and $\resAcqACGap$ ($\pm$\resAcqACSe) points. The BALD
+sampler does not improve on the band under either kernel. Two tempting
+explanations of the product kernel's failure do not survive. Class imbalance
+in the stream cannot be the cause, since both kernels see the same stream, and
+an information-theoretic rule is not the fix. Nor is it that the band spends its
+labels on intrinsically ambiguous actions: under the product kernel the band
+does place \resPlaceBandAmb\% of its labels on actions with true approval
+probability in $[0.35, 0.65]$ (base rate \resPlaceBaseAmb\%), at the same mean
+posterior variance as random querying (\resPlaceBandVar{} against
+\resPlaceRandomVar), but under the additive kernel it places even more of its
+labels there and still beats random.
+
+\paragraph{Takeaway.} The controlling variable is forgetting (\RQ3). Under the
+product kernel, actions return to the band on a fixed clock
+(Proposition~\ref{prop:forget}), so band labels are spent relearning static
+risk the model has forgotten; once the kernel stops forgetting static risk,
+the escalation rule is also a good acquisition rule, and the fix is the kernel
+rather than the acquisition function.
+
+\subsection{Generalization to never-labelled actions}\label{sec:exp-transfer}
+
+Section~\ref{sec:correlated} predicts that the kernel transfers approval in
+both directions. We hold out two combinations and never label them: the
+benign \texttt{write\_file} $\to$ \texttt{workspace\_tests} and the dangerous
+\texttt{git\_force\_push} $\to$ \texttt{prod\_infra}, and record the
+prequential decisions on their occurrences.
+
+\paragraph{Results.} On the benign combination the additive gateway
+auto-decides \resHoldABCorrect\% of occurrences correctly by kernel transfer
+(product \resHoldVBCorrect\%, per-cell \resHoldCBCorrect\%, since it must ask
+about every unseen cell). On the dangerous combination, where the oracle
+denies \resHoldADDeny{} of the occurrences, every kernel model wrongly allows
+some: \resHoldADFA{} (additive), \resHoldVDFA{} (product) and \resHoldLDFA{}
+(linear), against \resHoldTDFA{} for the per-tool learner, which has labels on
+the same tool at other targets, and none for the per-cell learner, which asks
+(Figure~\ref{fig:transfer}).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{transfer.pdf}
+\caption{Decisions on two never-labelled combinations, pooled over 10 seeds.
+(a)~Benign transfer: the kernel models auto-allow most occurrences correctly,
+while the per-cell learner must ask about every unseen cell. (b)~A dangerous
+combination the oracle mostly denies: every kernel model auto-allows a share
+of the oracle's denials (hatched; counts at the right), because the
+combination resembles approved neighbours; only the per-cell learner, which
+asks every time, allows none.}
+\label{fig:transfer}
+\end{figure}
+
+\paragraph{Takeaway.} Correlated generalization is what makes the burden
+small, and it is also a leak: approval propagates to unseen dangerous
+neighbours. We report the leak rather than tune it away; the remedies of
+Section~\ref{sec:correlated} and the audits of the next experiment address
+it.
+
+% =========================================================================== %
+\section{Auditing Auto-Decisions}\label{sec:exp-audit}
+
+The second experiment asks what random audits cost and what they buy
+(\RQ4). We add audits at $\varepsilon = 5\%$ of auto-decided actions under
+symmetric costs and compare the Horvitz--Thompson estimate of the realized
+false-allow rate with its true value.
+
+\begin{table}[t]
+\centering
+\small
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Model} & \textbf{Labels/action \%} & \textbf{Regret (audit billed)} & \textbf{Veto ALLOW}
+ & \textbf{HT est./truth \%} & \textbf{CI covers} \\
+\midrule
+\TabAudit
+\bottomrule
+\end{tabular}}
+\caption{Auditing auto-decisions: random audits of $\varepsilon = 5\%$ of
+auto-decided actions, symmetric costs, 10 seeds; arrows show no audits $\to$
+audits. Regret charges decisions only, so audits are free in it; the value in
+parentheses bills each audit as one escalation. The last columns compare the
+Horvitz--Thompson estimate of the realized false-allow rate with its true
+value, and give the share of seeds whose Jeffreys 95\% interval on the audited
+fraction covers the truth.}
+\label{tab:audit}
+\end{table}
+
+\paragraph{Results.} For the additive gateway audits raise labels per action
+from \resALabels\% to \resAudALabels\% and halve veto-window allows
+(\resAVeto{} $\to$ \resAudAVeto; Table~\ref{tab:audit}); for the linear
+baseline they cut veto-window allows from \resLVeto{} to \resAudLVeto. Regret
+as defined charges decisions only, so an audit of an auto-decided action is
+free in it; on that measure the additive gateway's regret falls from
+\resARegret{} to \resAudARegret. Billing each audit as one escalation, it
+rises to \resAudACharged{} instead: audits pay for themselves in average
+regret only if one costs at most \resAudABreakEven{} of an escalation, which a
+post-hoc review may or may not. The Horvitz--Thompson estimate of the realized
+false-allow rate is \resAudAEst\% against a true \resAudATruth\%, and a
+Jeffreys interval on the audited fraction covers the truth in
+\resAudACover\% of seeds. With about forty audits per seed the estimate is
+noisy, as Proposition~\ref{prop:audit}(b) predicts.
+
+\paragraph{Takeaway.} Audits make the gateway's error rate estimable, not
+small, and they improve safety inside the veto window; once their cost is
+counted, they do not lower average regret (\RQ4).
+
+% =========================================================================== %
+\section{Calibrating a Simulated LLM Judge}\label{sec:exp-judge}
+
+The third experiment replaces the tool taxonomy by an opaque judge (\RQ5).
+It asks whether a calibrated gateway on top of the judge improves on the
+judge's own decisions, whether the judge's reliability for the supervisor
+moves while the judge does not, and whether audits can track it. Every
+setting was fixed in a pre-registration committed before the first run, and
+the study ran without deviations.
+
+\paragraph{Design.} We keep the oracle, stream and seeds of
+Section~\ref{sec:setup} and add a judge. The judge sees the action's static
+risk but not the supervisor's trust state, task preferences or veto; it blocks
+when a noisy score of the risk exceeds a fixed threshold, and it has a blind
+spot: destructive shell commands look benign to it. The gateway sees only the
+judge's verdict (or score), an eight-way command category and time. We
+compare six policies: the judge alone; escalating the judge's blocks instead
+of enforcing them; asking about every action; the calibrated gateway of
+Section~\ref{sec:judge-gateway} with and without audits; and the same gateway
+with the product kernel. This simulated judge is much stricter than the
+production classifier: it blocks about a quarter of all actions, most of
+which this supervisor would approve, against a reported false-positive rate
+of $0.4\%$. Gains from turning its blocks into escalations are therefore
+dominated by avoided false blocks and reflect the pre-registered threshold
+rather than a prediction about any deployed system; the relational and
+estimation results do not depend on it.
+
+\begin{table}[t]
 \centering
 \small
 \begin{tabular}{@{}lcccccc@{}}
@@ -883,60 +1098,106 @@ below do not depend on it.
 \TabJudge
 \bottomrule
 \end{tabular}
-\caption{Opaque-judge study, verdict input, 10 seeds. FA is the share of
-\textsc{allow}s the oracle would deny; Blind FA pools, over seeds, the blind-spot
-actions the oracle would deny that were auto-allowed. Audits are free in
-regret (Section~\ref{sec:simulation}).}
+\caption{Calibrating a simulated judge, verdict input, 10 seeds. FA is the
+share of \textsc{allow}s the oracle would deny; Blind FA pools, over seeds,
+the blind-spot actions the oracle would deny that were auto-allowed. Audits
+are free in regret (Section~\ref{sec:exp-audit}).}
 \label{tab:judge}
 \end{table}
 
-\paragraph{Results.} Table~\ref{tab:judge} summarizes the policies. Letting the
-judge decide alone gives regret \jrJudgeOnlyRegret{} with no human labels;
-escalating its blocks instead of enforcing them gives \jrJudgeEscalateRegret{}
-at \jrJudgeEscalateLabels\% labels. The calibrated gateway reaches the same
-regret (\jrCalibratedRegret) with half the labels (\jrCalibratedLabels\%),
-and lower regret with the judge's score (\jrCalibratedScoreRegret) or with
-audits (\jrCalibratedAuditRegret, audits unbilled). It is also more permissive
-than the judge (false-allow \jrCalibratedFA\% against \jrJudgeOnlyFA\%),
-because it learns that this supervisor approves much of what the judge
-blocks: the gateway estimates whether \emph{this supervisor} would approve,
-not whether the action is safe, and a judge's fixed policy can be safer than
-a supervisor's revealed tolerance. Under safety-weighted costs the sign flips
-(false-allow \jrCalibratedSafeFA\%) at \jrCalibratedSafeLabels\% labels, and
-calibration buys regret \jrCalibratedSafeRegret{} against
-\jrJudgeEscalateSafeRegret{} for escalating the judge's blocks, at about
-twenty more labels per hundred actions. With the product kernel the gateway
-again escalates almost everything under safety costs
-(\jrCalibratedProductAuditSafeLabels\% labels), the forgetting collapse of
-Proposition~\ref{prop:forget} outside the tool taxonomy.
+\paragraph{Does calibration improve on the judge?} Letting the judge decide
+alone gives regret \jrJudgeOnlyRegret{} with no human labels
+(Table~\ref{tab:judge}); escalating its blocks instead of enforcing them gives
+\jrJudgeEscalateRegret{} at \jrJudgeEscalateLabels\% labels. The calibrated
+gateway reaches the same regret (\jrCalibratedRegret) with half the labels
+(\jrCalibratedLabels\%), and lower regret with the judge's score
+(\jrCalibratedScoreRegret) or with audits (\jrCalibratedAuditRegret, audits
+unbilled). It is also more permissive than the judge (false-allow
+\jrCalibratedFA\% against \jrJudgeOnlyFA\%), because it learns that this
+supervisor approves much of what the judge blocks: the gateway estimates
+whether \emph{this supervisor} would approve, not whether the action is safe,
+and a judge's fixed policy can be safer than a supervisor's revealed
+tolerance. Under safety-weighted costs the sign flips (false-allow
+\jrCalibratedSafeFA\%) at \jrCalibratedSafeLabels\% labels, and calibration
+buys regret \jrCalibratedSafeRegret{} against \jrJudgeEscalateSafeRegret{}
+for escalating the judge's blocks, at about twenty more labels per hundred
+actions. With the product kernel the gateway again escalates almost
+everything under safety costs (\jrCalibratedProductAuditSafeLabels\% labels),
+the forgetting collapse of Proposition~\ref{prop:forget} outside the tool
+taxonomy.
 
-The judge's reliability for this supervisor moves while the judge does not
-(Figure~\ref{fig:judge}): its false-allow rate is \jrRelPreFATrue\% before the
-supervisor's trust reset, \jrRelPostFATrue\% after it and \jrRelLateFATrue\%
-late, as Proposition~\ref{prop:judge-rel} predicts. Horvitz--Thompson estimates
-from the gateway's labels track these values (\jrRelPreFAEst\%,
-\jrRelPostFAEst\% and \jrRelLateFAEst\% on average), unbiased but noisy within
-a window, with standard deviations across seeds of \jrRelPreFASd{} to
+\paragraph{Does the judge's reliability move?} The judge's reliability for
+this supervisor moves while the judge does not (Figure~\ref{fig:judge}): its
+false-allow rate is \jrRelPreFATrue\% before the supervisor's trust reset,
+\jrRelPostFATrue\% after it and \jrRelLateFATrue\% late, as
+Proposition~\ref{prop:judge-rel} predicts. Horvitz--Thompson estimates from
+the gateway's labels track these values (\jrRelPreFAEst\%,
+\jrRelPostFAEst\% and \jrRelLateFAEst\% on average), unbiased but noisy
+within a window, with standard deviations across seeds of \jrRelPreFASd{} to
 \jrRelPostFASd{} points, because each window holds only \jrRelPreLabels{} to
 \jrRelPostLabels{} human labels on judge-allowed actions, escalations and
-audits together. Without audits
-they are undefined in every seed. The blind spot is not caught under
-symmetric costs: \jrCalibratedBlind{} of the blind-spot actions this
-supervisor would deny are still allowed, because they are indistinguishable
-from benign shell commands in the gateway's features; under safety costs the
-count falls to \jrCalibratedSafeBlind{} only because the gateway escalates
-judge-allowed shell commands as a class.
+audits together. Without audits they are undefined in every seed.
 
-\begin{figure}[tb]
+\begin{figure}[t]
 \centering
-\includegraphics[width=0.62\linewidth]{judge_reliability.pdf}
-\caption{The same judge's error rates for one supervisor, before and after the
-supervisor's trust reset: truth (solid) and Horvitz--Thompson audit estimates
-(dashed, $\pm 1$ s.d.\ across seeds).}
+\includegraphics[width=\linewidth]{judge_reliability.pdf}
+\caption{The same, unchanged judge's error rates for one supervisor, in three
+windows around the supervisor's trust reset. (a)~False-allow rate
+$\Pr(\text{deny} \mid J = \textsc{allow})$; (b)~false-block rate
+$\Pr(\text{approve} \mid J = \textsc{block})$. Lines: true rates; dots:
+per-seed Horvitz--Thompson estimates from escalations and audits; diamonds:
+their mean. The false-allow rate more than triples after the reset although
+the judge is unchanged. The per-seed estimates scatter widely because each
+window holds few labels; the estimator is unbiased but not bounded, so single
+estimates can exceed one.}
 \label{fig:judge}
 \end{figure}
 
-\paragraph{Answering the two questions.} Whether a judge is trustworthy is a
+\paragraph{Can calibration catch a blind spot?} No. Under symmetric costs
+\jrCalibratedBlind{} of the blind-spot actions this supervisor would deny are
+still allowed, because they are indistinguishable from benign shell commands
+in the gateway's features; under safety costs the count falls to
+\jrCalibratedSafeBlind{} only because the gateway escalates judge-allowed
+shell commands as a class.
+
+\paragraph{Takeaway.} A calibrated gateway uses the judge's verdict as
+evidence and spends human labels where the verdict is unreliable for this
+supervisor; the judge's trustworthiness is a moving, relational quantity that
+only audited labels can measure; and calibration cannot see past the features
+it is given.
+
+% =========================================================================== %
+\section{Discussion}\label{sec:discussion}
+
+\subsection{Answers to the research questions}\label{sec:answers}
+
+\paragraph{\RQ1: Decision rule.} The three-tier gateway is Chow's reject
+option. Its thresholds follow from what a false allow, a false block and an
+interruption cost, and need no labels; its only input is the mean approval
+probability; and its escalation rate cannot fall below the supervisor's own
+ambiguity at those costs (\resFloorSym\% and \resFloorSafe\% of actions in our
+two cost settings).
+
+\paragraph{\RQ2: Feedback.} Unary approve/deny feedback identifies the
+allow/deny boundary; pairwise comparisons identify only a ranking. The gateway
+is GP classification with a reject option and a level-set objective, a
+relative of preferential Bayesian optimization but not an instance of it.
+
+\paragraph{\RQ3: Memory.} A model of a drifting supervisor should forget the
+supervisor's tolerance, not the risk of the actions. Forgetting both, as a
+separable kernel does, re-escalates every action on a fixed clock, roughly
+doubles the human burden, makes a demanding confidence bar unreachable and
+destroys the value of the \textsc{ask} band as an acquisition rule. An
+additive kernel that forgets only what drifts avoids all four; correlated
+generalization remains a leak toward dangerous neighbours.
+
+\paragraph{\RQ4: Evaluation.} Because the gateway labels only what it
+escalates, its error rate is invisible without audits. Random audits with
+logged propensities make it estimable without bias, but not precisely:
+certifying a false-allow rate below $\alpha$ takes $\ln(1/\delta)/\alpha$
+clean audits, and audits do not lower average regret once they are billed.
+
+\paragraph{\RQ5: Opaque judges.} Whether a judge is trustworthy is a
 statistical claim about a moving target. It cannot be read off the judge's
 verdicts (Proposition~\ref{prop:judge-ident}); it changes with the supervisor
 (Proposition~\ref{prop:judge-rel}); and certifying it takes clean audits in
@@ -948,68 +1209,80 @@ this supervisor over the last $n$ audits''. How likely a given verdict is to
 be right is the calibrated posterior $\hat p$, which needs the same labels and
 cannot exceed what the features can distinguish.
 
-\paragraph{Limits of the human as ground truth.} Our supervisor is noisy but
-unbiased. Real supervisors are not: users approve $97\%$ of permission prompts
-in one deployment, and in a controlled study human reviewers caught $13.6\%$ of
+\subsection{Implications for agent harnesses}\label{sec:practice}
+
+Four design choices follow for a harness that gates agent actions. First,
+uncertainty should escalate rather than refuse: in our judge study, turning
+the judge's blocks into escalations cut regret from \jrJudgeOnlyRegret{} to
+\jrJudgeEscalateRegret. Second, thresholds should be derived from stated costs,
+which also documents the operator's risk appetite, rather than tuned on labels
+the gateway does not have. Third, a model of the supervisor should keep what
+it has learned about static risk and forget only the supervisor's tolerance.
+Fourth, a small fraction of auto-decisions, including judge-allowed ones,
+should be audited with the sampling propensity logged next to each label;
+both deployed designs of Section~\ref{sec:judge-deployed} show the human only
+blocked actions, so neither can estimate its judge's false-allow rate for a
+given user. The judge is then best used as a feature of a calibrated gateway,
+with argument-level features for the blind spots calibration cannot reach.
+Each judge call is itself a paid model call, so a cascade that consults the
+judge only when the gateway is uncertain, in the spirit of selective
+evaluation with escalation \citep{jung2025trust}, is a natural extension. We
+release a Go library and command-line hook for agent harnesses that implement
+these choices: both kernels, cost-derived thresholds, audits whose sampling
+propensities are logged with each label, a certification check, and a
+featurizer over a judge's verdict and a command category.
+
+\subsection{Limitations}\label{sec:limitations}
+
+\paragraph{Simulation.} All results come from a controlled simulation whose
+oracle follows Definition~\ref{def:latent}. The oracle is additive by
+construction, which favours the additive kernel and, through its linear
+static term, the linear baseline; the size of the gains is indicative, not a
+prediction. The simulated judge is far stricter than the production
+classifiers it stands in for, so gains from escalating its blocks are
+inflated. The main remaining gap is empirical: a longitudinal study of real
+supervisors approving real agent actions.
+
+\paragraph{The human as ground truth.} Our supervisor is noisy but unbiased.
+Real supervisors are not: users approve $97\%$ of permission prompts in one
+deployment, and in a controlled study human reviewers caught $13.6\%$ of
 dangerous commands against $89\%$ for the classifier, with their block rate
 falling from about $17\%$ early in a session to about $5\%$ after fifty or more
 prompts \citep{phillippi2026automodedefault}, consistent with habituation to
 repeated warnings \citep{anderson2015polymorphic}. A gateway calibrated to a
 rubber-stamping supervisor learns to rubber-stamp; a fatigue-aware model would
 make the cost of asking, and the noise of the answer, grow with the escalation
-rate, which argues for fewer and better-targeted escalations. Judges are also
-attack surfaces: agent-written prompt injections obtained arbitrary shell
-execution past two production classifiers in $79\%$ of trials
-\citep{remedios2026redteaming}, and reliability estimated from benign audits
-says nothing about adaptive attacks; control protocols with trusted monitors
-and audit budgets address that setting \citep{greenblatt2024control,bhatt2025ctrlz}.
-Finally, each judge call is itself a paid model call, so a cascade that
-consults the judge only when the gateway is uncertain, in the spirit of
-selective evaluation with escalation \citep{jung2025trust}, is a natural next
-step.
+rate, which argues for fewer and better-targeted escalations.
 
-\section{Mechanized Verification}\label{sec:lean}
+\paragraph{Adversaries.} Judges are attack surfaces: agent-written prompt
+injections obtained arbitrary shell execution past two production classifiers
+in $79\%$ of trials \citep{remedios2026redteaming}, and reliability estimated
+from benign audits says nothing about adaptive attacks. Control protocols with
+trusted monitors and audit budgets address that setting
+\citep{greenblatt2024control,bhatt2025ctrlz}.
 
-The decision-theoretic and algebraic cores of Propositions~\ref{prop:ident}--\ref{prop:judge-ht}
-are formalized in Lean~4 (v4.34.1) with Mathlib (v4.34.1) in the
-\texttt{lean/} directory of the released code; the build has no \texttt{sorry},
-and every theorem depends only on Lean's standard axioms (\texttt{propext},
-\texttt{Classical.choice}, \texttt{Quot.sound}). Table~\ref{tab:lean} maps
-each proposition to its theorems. The formalization keeps the link function
-abstract (strictly increasing, or continuous at zero with value one half)
-rather than using the Gaussian CDF, which covers the probit and logistic
-links alike. It does not formalize the Laplace approximation itself:
-Proposition~\ref{prop:forget} is stated for any predictor that is linear in
-the cross-covariance vector with coefficients fixed by the training data,
-which is the form of the Laplace mean and of exact GP regression.
-Proposition~\ref{prop:chow}(a) is proved for an arbitrary probability measure
-over the latent value using the Bochner integral, and
-Proposition~\ref{prop:floor} for finite action populations; Proposition~\ref{prop:judge-ident}
-is proved by explicit construction on the four cells of the verdict--decision
-table. The Python
-experiment checks the same statements numerically
-(\texttt{experiment/tests}).
+\paragraph{Modelling choices.} The decision rule is one-step
+(Remark~\ref{rem:voi}); a rule that prices the value of information might ask
+less. The Laplace approximation is known to be over-cautious, the
+Ornstein--Uhlenbeck time kernel is non-directional, and the isotropic
+lengthscales let approval leak to dangerous neighbours; the forgetting rate is
+pre-specified, because evidence selection prefers memories that are too long
+for the rare veto region. Reliability estimates within a window rest on a few
+dozen labels.
 
-\begin{table}[h]
-\centering
-\small
-\begin{tabular}{@{}ll>{\raggedright\arraybackslash}p{0.57\linewidth}@{}}
-\toprule
-\textbf{Result} & \textbf{File} & \textbf{Theorems} \\
-\midrule
-Prop.~\ref{prop:ident} & \lean{Identifiability.lean} & \lean{unary\_identifies}, \lean{unary\_identifies\_boundary}, \lean{pairwise\_shift\_invariant}, \lean{pairwise\_cannot\_identify\_threshold} \\
-Prop.~\ref{prop:chow} & \lean{Chow.lean} & \lean{expectedLoss\_allow}, \lean{expectedLoss\_block}, \lean{band\_nonempty\_iff}, \lean{allow/block/ask\_strictly\_optimal}, \lean{decide\_optimal}, \lean{ask\_never\_needed} \\
-Prop.~\ref{prop:floor} & \lean{Floor.lean} & \lean{optimal\_asks\_on\_band}, \lean{escalation\_floor} \\
-Prop.~\ref{prop:forget} & \lean{Forgetting.lean} & \lean{kT\_shift}, \lean{meanProd\_shift}, \lean{quadForm\_shift}, \lean{exp\_decay\_tendsto}, \lean{eventually\_ask}, \lean{reentry\_bound}, \lean{reentry\_prob}, \lean{meanAdd\_shift}, \lean{meanAdd\_tendsto} \\
-Prop.~\ref{prop:audit} & \lean{Audit.lean} & \lean{audit\_unbiased}, \lean{one\_sub\_pow\_le\_exp}, \lean{certify\_sample\_size} \\
-Props.~\ref{prop:judge-ident}--\ref{prop:judge-ht} & \lean{Judge.lean} & \lean{judge\_unidentified}, \lean{judge\_marginals\_not\_enough}, \lean{judgeFA\_mono}, \lean{ht\_unbiased} \\
-Remark (margin) & \lean{Identifiability.lean} & \lean{lcb\_iff} \\
-\bottomrule
-\end{tabular}
-\caption{Propositions and their machine-checked counterparts (31 theorems).}
-\label{tab:lean}
-\end{table}
+\paragraph{Scope of the formal verification.} The machine-checked proofs
+(Appendix~\ref{app:lean}) keep the link function abstract (strictly
+increasing, or continuous at zero with value one half), which covers the
+probit and logistic links alike. They do not formalize the Laplace
+approximation: Proposition~\ref{prop:forget} is proved for any predictor that
+is linear in the cross-covariance vector with coefficients fixed by the
+training data, which is the form of the Laplace mean and of exact GP
+regression. Proposition~\ref{prop:chow}(a) is proved for an arbitrary
+probability measure over the latent value, and
+Propositions~\ref{prop:floor} and~\ref{prop:judge-rel} for finite action
+populations.
 
+% =========================================================================== %
 \section{Concluding Remarks}\label{sec:conclusion}
 
 Deciding when an agent may act alone is not a threshold to hand-tune but a
@@ -1027,9 +1300,13 @@ tool taxonomy is replaced by an opaque judge over arbitrary shell actions, the
 same machinery calibrates the judge to a supervisor, but the judge's
 trustworthiness becomes a moving, relational quantity that only audited
 labels can measure, and calibration cannot see past the features it is given.
-The main remaining gap is empirical: a longitudinal study of real supervisors,
-whose own reliability as ground truth declines as they are asked more often.
+What remains is to measure real supervisors over time, including how their
+own reliability as ground truth declines as they are asked more often.
 
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+% =========================================================================== %
 \appendix
 
 \section{Proofs}\label{app:proofs}
@@ -1078,51 +1355,106 @@ least $\alpha$, each audit is clean with probability at most $1 - \alpha$, and
 $1 - \alpha \le e^{-\alpha}$; then $e^{-\alpha n} \le \delta$ iff
 $n \ge \ln(1/\delta)/\alpha$.
 
-\section{Changes from Version 1}\label{app:changes}
+\paragraph{Proposition~\ref{prop:judge-ident}.} Write the joint of verdict and
+decision as the four cell probabilities (allow \& deny, allow \& approve,
+block \& deny, block \& approve). (a) Take $(a\varphi,\ a(1-\varphi),\ 1-a,\
+0)$: the judge allows with probability $a$ and
+$\mathrm{FA}_J = a\varphi/a = \varphi$. (b) Take $(0, 0.8, 0.1, 0.1)$ and
+$(0.1, 0.7, 0, 0.2)$: both have judge allow rate $0.8$ and supervisor approval
+rate $0.9$, and $\mathrm{FA}_J$ is $0$ and $0.1/0.8 = 1/8$.
 
-\begin{enumerate}[nosep,leftmargin=*]
-\item Version~1 called the gateway an instance of preferential Bayesian
-optimization and the unary model a degenerate pairwise comparison. Pairwise
-feedback cannot identify the threshold (Proposition~\ref{prop:ident}); the
-gateway is GP classification with a reject option.
-\item Version~1 gave no loss for the three-tier rule and tuned its test-phase
-thresholds with oracle labels on all validation actions. The rule is Chow's
-(Proposition~\ref{prop:chow}) and thresholds now follow from stated costs.
-\item Version~1 asserted that an 85--90\% auto-approval rate emerges without
-tuning. The achievable rate is bounded by the supervisor's ambiguity
-(Proposition~\ref{prop:floor}).
-\item Version~1 stated that $k_{\text{time}}$ does not generate new probes. It
-forces periodic re-escalation (Proposition~\ref{prop:forget}), which is the
-main cause of its high escalation rate and underconfidence; version~1
-attributed the underconfidence to the Laplace approximation.
-\item Version~1 attributed the acquisition result to class imbalance and
-proposed an information-theoretic rule as the remedy. The cause is
-forgetting; with an additive kernel the band beats random querying, and a
-BALD sampler does not help (Table~\ref{tab:acq}).
-\item Version~1 reported ``508 vs 940 queries, a $\sim$1.8$\times$
-reduction''; its numerator counted the whole stream and its denominator only
-the scored phases. On matching phases the version-1 protocol gives about
-$3.0\times$; the version-2 protocol gives \resVBurden$\times$ (product) and
-\resABurden$\times$ (additive).
-\item Version~1's transfer test held out only a benign combination, and its
-per-tool baseline ignored target and task. Version~2 adds a dangerous
-hold-out, a per-cell baseline and a linear-probit baseline.
-\item Version~1 did not state its hyperparameters, described a sliding window
-as equivalent to the time kernel, and illustrated argument-level transfer
-(\texttt{DROP} to \texttt{TRUNCATE}) that its single destructive-argument
-feature cannot express. These are corrected.
-\end{enumerate}
+\paragraph{Proposition~\ref{prop:judge-rel}.} On $A$, $1 - q' \ge 1 - q$
+pointwise; summing with the nonnegative weights over $A$ and dividing by the
+positive weight of $A$ (the same for both supervisors) preserves the
+inequality.
 
-\section{Additions in Version 3}\label{app:v3}
+\paragraph{Proposition~\ref{prop:judge-ht}.} By linearity,
+$\mathbb E\sum_i L_i e_i/\pi_i = \sum_i \pi_i e_i/\pi_i = \sum_i e_i$.
 
-Section~\ref{sec:judge} (an opaque judge in front of the gateway,
-Definition~\ref{def:judge}, Propositions~\ref{prop:judge-ident}--\ref{prop:judge-ht}
-and a pre-registered simulation) and its Lean formalization
-(\texttt{Judge.lean}) are new in version 3, as are the comparison with the
-open-source Codex reviewer and the Go port's support for the additive kernel,
-cost-derived thresholds, audits with logged propensities and judge features.
+\section{Machine-Checked Proofs}\label{app:lean}
 
-\bibliographystyle{plainnat}
-\bibliography{references}
+The decision-theoretic and algebraic cores of all eight propositions are
+formalized in Lean~4 (v4.34.1) with Mathlib (v4.34.1). The development has no
+unproved goals (\texttt{sorry}), and every theorem depends only on Lean's
+standard axioms (\texttt{propext}, \texttt{Classical.choice},
+\texttt{Quot.sound}). Table~\ref{tab:lean} maps each proposition to its
+theorems; Section~\ref{sec:limitations} states the scope of the
+formalization. The simulation code checks the same statements numerically in
+its test suite.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}ll>{\raggedright\arraybackslash}p{0.57\linewidth}@{}}
+\toprule
+\textbf{Result} & \textbf{Module} & \textbf{Theorems} \\
+\midrule
+Prop.~\ref{prop:ident} & \lean{Identifiability} & \lean{unary\_identifies}, \lean{unary\_identifies\_boundary}, \lean{pairwise\_shift\_invariant}, \lean{pairwise\_cannot\_identify\_threshold} \\
+Prop.~\ref{prop:chow} & \lean{Chow} & \lean{expectedLoss\_allow}, \lean{expectedLoss\_block}, \lean{band\_nonempty\_iff}, \lean{allow/block/ask\_strictly\_optimal}, \lean{decide\_optimal}, \lean{ask\_never\_needed} \\
+Prop.~\ref{prop:floor} & \lean{Floor} & \lean{optimal\_asks\_on\_band}, \lean{escalation\_floor} \\
+Prop.~\ref{prop:forget} & \lean{Forgetting} & \lean{kT\_shift}, \lean{meanProd\_shift}, \lean{quadForm\_shift}, \lean{exp\_decay\_tendsto}, \lean{eventually\_ask}, \lean{reentry\_bound}, \lean{reentry\_prob}, \lean{meanAdd\_shift}, \lean{meanAdd\_tendsto} \\
+Prop.~\ref{prop:audit} & \lean{Audit} & \lean{audit\_unbiased}, \lean{one\_sub\_pow\_le\_exp}, \lean{certify\_sample\_size} \\
+Props.~\ref{prop:judge-ident}--\ref{prop:judge-ht} & \lean{Judge} & \lean{judge\_unidentified}, \lean{judge\_marginals\_not\_enough}, \lean{judgeFA\_mono}, \lean{ht\_unbiased} \\
+Remark~\ref{rem:margin} & \lean{Identifiability} & \lean{lcb\_iff} \\
+\bottomrule
+\end{tabular}
+\caption{Propositions and their machine-checked counterparts (31 theorems).}
+\label{tab:lean}
+\end{table}
+
+\section{Simulation Details}\label{app:sim}
+
+\paragraph{Actions and features.} Each of the $18$ tools has a category
+(read, search, version control, execution, write, database, network, deploy),
+a reversibility class (reversible, hard to reverse, irreversible), a base
+sensitivity in $[0,1]$, a blast radius from $0$ (one file) to $3$ (external),
+and a probability that a destructive argument accompanies it. Targets have
+sensitivities from $0$ (\texttt{sandbox\_tmp}) to $1$
+(\texttt{prod\_infra}). At each step a task is drawn uniformly, a tool
+category from task-specific weights, a tool uniformly within the category, a
+target uniformly among those plausible for the category, and the
+destructive-argument flag from the tool's probability. The tool feature
+vector is (reversibility$/2$, base sensitivity, blast radius$/3$, category
+one-hot); the context feature vector is (target sensitivity,
+destructive-argument flag, task one-hot).
+
+\paragraph{Oracle.} The latent tolerance is
+$f^*(x,t) = a_0 - w\,r(x) + \rho\,\mathrm{trust}(t) + o(\text{task}) -
+v\,\mathbb 1[\text{veto}]$ with $a_0 = 1.4$, $w = 3.4$, $\rho = 1$ and
+$v = 3$. The risk is $r(x) = 0.28\,\text{rev}/2 + 0.32\,\text{target
+sensitivity} + 0.12\,\text{blast}/3 + 0.16\,\text{destructive argument} +
+0.12\,\text{base sensitivity}$. Trust accumulates as
+$\mathrm{trust}(t) = \theta\,(1 - e^{-(t - t_0)/\kappa})$ with $\theta = 1.6$,
+$\kappa = 130$, $t_0 = 0$ before the reset and $t_0 = 750$ after it. Task
+offsets range from $-0.25$ (data migration) to $+0.15$ (security hardening).
+The veto is active when the tool is irreversible, the target sensitivity is at
+least $0.65$ and trust is below $\theta/2$, that is, for about
+$\kappa \ln 2 \approx 90$ steps after each (re)start. The stationary oracle of
+the acquisition probe saturates trust immediately and never resets it, so the
+veto is never active.
+
+\paragraph{Models.} The GP models refit every $8$ steps. Evidence-selected
+models re-select by Laplace marginal likelihood every $64$ labels, over
+$\sigma^2 \in \{1.6, 3.2\}$ and $\lambda \in \{60, 120, 240, 480, 960\}$ for the
+product kernel; over the splits $(\sigma_s^2, \sigma_g^2, \sigma_d^2) \in
+\{(1.6, 1.0, 0.6), (3.2, 1.0, 0.6), (1.6, 2.0, 0.6), (1.6, 1.0, 1.6)\}$ and
+$\lambda \in \{60, 120, 240, 480\}$ for the additive kernel; and over
+$\lambda \in \{60, 120, 240, 480\}$ for the linear probit. The Beta-Bernoulli
+baselines start from $\mathrm{Beta}(1,1)$.
+
+\paragraph{Acquisition probe.} For each of $20$ seeds, the band strategy runs
+first and fixes the label budget; random querying labels each action with the
+band's overall query rate, and the BALD sampler labels an action when its
+BALD score is in the top fraction, equal to that rate, of the last $100$
+scores (using the band for the first $20$ steps). All three share the stream.
+
+\paragraph{Judge.} The judge's score is
+$s = \operatorname{logistic}\bigl(8\,(r' - 0.5) + \eta\bigr)$ with
+$\eta \sim \mathcal N(0, 1)$, where $r'$ is the action's risk except for
+destructive execution commands, which the judge perceives as $r' = 0.2$
+(the blind spot); it blocks when $s > 0.5$. The gateway's tool features are
+the judge's verdict (or score) and the eight-way category one-hot; its
+context features are constant. Reliability windows are
+$[560, 750)$, $[750, 1050)$ and $[1050, 1500)$.
 
 \end{document}

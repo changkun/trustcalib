@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this software or build on the paper, please cite the paper below."
-title: "trustcalib: artifact for Progressive Autonomy as Preference Learning"
+title: "trustcalib: artifact for Learning When to Ask"
 authors:
   - family-names: Ou
     given-names: Changkun
@@ -9,7 +9,7 @@ repository-code: "https://github.com/changkun/trustcalib"
 license: Apache-2.0
 preferred-citation:
   type: article
-  title: "Progressive Autonomy as Preference Learning: A Formalization of Trust Calibration for Agentic Tool Use"
+  title: "Learning When to Ask: Trust Calibration for Agentic Tool Use, from Known Tools to Opaque LLM Judges"
   authors:
     - family-names: Ou
       given-names: Changkun

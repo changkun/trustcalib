@@ -1,7 +1,7 @@
 # trustcalib (Go)
 
-A Go implementation of the escalation gateway from the paper *Progressive
-Autonomy as Preference Learning*: an online, three-tier **allow / ask / block**
+A Go implementation of the escalation gateway from the paper *Learning When
+to Ask*: an online, three-tier **allow / ask / block**
 decision layer for agentic tool use. It keeps a Gaussian-process posterior over
 the supervisor's latent tolerance, updates it from approve/deny feedback
 through a probit likelihood, and turns the posterior into a decision with

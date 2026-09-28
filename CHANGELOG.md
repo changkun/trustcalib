@@ -1,17 +1,23 @@
 # Changelog
 
 Release history of the paper and its artifact. Each release is a git tag.
-arXiv versions are listed where a release was submitted.
 
-## Unreleased
+## v3, 2026-09-28
 
+The extension to opaque LLM judges, and a restructured paper under a new
+title.
+
+- **New title.** *Learning When to Ask: Trust Calibration for Agentic Tool
+  Use, from Known Tools to Opaque LLM Judges*, previously *Progressive
+  Autonomy as Preference Learning: A Formalization of Trust Calibration for
+  Agentic Tool Use*.
 - **Paper restructured.** The paper now follows a conventional layout:
   introduction with explicit research questions, related work, method (trust
   calibration as classification with a reject option, and calibration of an
   opaque LLM judge), experimental setup, three experiments, discussion and
   concluding remarks. It adds an overview figure of the escalation loop.
-- **Version notes moved.** The paper no longer carries version history or
-  repository paths. The version notes that were its appendices are recorded
+- **No version notes in the paper.** The paper no longer carries version
+  history or repository paths; the corrections to v1 are recorded under v2
   below.
 - **Figures redrawn.** The figures now share one style, and the drift-tracking
   and calibration plots are merged into the forgetting figure.
@@ -21,11 +27,6 @@ arXiv versions are listed where a release was submitted.
 - **Wording only.** Code comments and the Go and Lean READMEs describe the
   kernels by structure (product, additive) rather than by version. No numbers
   changed.
-
-## v3 (489f834), 2026-09-28
-
-The extension to opaque LLM judges.
-
 - **Opaque judge.** New section on an opaque LLM judge in front of the
   gateway, for shell-centric agent harnesses where no fixed tool taxonomy
   exists. It adds:

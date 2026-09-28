@@ -1,7 +1,7 @@
 # Machine-checked propositions
 
 This directory is a Lean 4 formalization of the propositions in the paper
-*Progressive Autonomy as Preference Learning* (the paper's appendix
+*Learning When to Ask* (the paper's appendix
 "Machine-checked proofs" maps each proposition to its theorems). The build
 contains no `sorry`, and every theorem depends only on Lean's standard axioms
 (`propext`, `Classical.choice`, `Quot.sound`).

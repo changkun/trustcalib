@@ -1,6 +1,6 @@
-# Progressive Autonomy as Preference Learning
+# Learning When to Ask
 
-**A Formalization of Trust Calibration for Agentic Tool Use**
+**Trust Calibration for Agentic Tool Use, from Known Tools to Opaque LLM Judges**
 
 Changkun Ou, Latere AI, Munich, Germany ·
 [arXiv:2605.19151](https://arxiv.org/abs/2605.19151) ·
@@ -196,9 +196,9 @@ reference. See [`go/README.md`](go/README.md).
 ## Citation
 
 ```bibtex
-@misc{ou2026progressive,
-  title         = {Progressive Autonomy as Preference Learning: A Formalization
-                   of Trust Calibration for Agentic Tool Use},
+@misc{ou2026learning,
+  title         = {Learning When to Ask: Trust Calibration for Agentic Tool
+                   Use, from Known Tools to Opaque LLM Judges},
   author        = {Ou, Changkun},
   year          = {2026},
   eprint        = {2605.19151},
@@ -214,5 +214,4 @@ reference. See [`go/README.md`](go/README.md).
 
 Apache License 2.0; see [`LICENSE`](LICENSE).
 
-The release history (git tags and the corresponding arXiv versions) is in
-[`CHANGELOG.md`](CHANGELOG.md).
+The release history (git tags) is in [`CHANGELOG.md`](CHANGELOG.md).

@@ -1,7 +1,7 @@
 // Package config loads trustcalib hyperparameters from a YAML file. Every field
-// has the manuscript default, so an absent file or an absent key falls back
-// cleanly. The loaded Config builds the kernel, GP model and gateway, and
-// names the featurizer the CLI should use.
+// has a default, so an absent file or an absent key falls back cleanly. The
+// loaded Config builds the kernel, GP model and gateway, and names the
+// featurizer the CLI should use.
 package config
 
 import (
@@ -21,8 +21,8 @@ import (
 
 // Kernel types accepted in KernelCfg.Type.
 const (
-	KernelProduct  = "product"  // v1 kernel.ProductKernel (default)
-	KernelAdditive = "additive" // v2 kernel.AdditiveKernel
+	KernelProduct  = "product"  // kernel.ProductKernel (default)
+	KernelAdditive = "additive" // kernel.AdditiveKernel
 )
 
 // Featurizer names accepted in Config.Featurizer.
@@ -102,7 +102,8 @@ type Config struct {
 	Featurizer string     `yaml:"featurizer"` // "taxonomy" (default) or "judge"
 }
 
-// Default returns the manuscript defaults.
+// Default returns the default configuration: the product kernel
+// (kernel.DefaultKernel), the fixed band (0.35, 0.65), no costs and no audits.
 func Default() Config {
 	k := kernel.DefaultKernel()
 	a := kernel.DefaultAdditiveKernel()
@@ -149,9 +150,10 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-// Validate checks the selectors and the new (version-2) keys: the kernel type
-// and featurizer name, the additive kernel's parameters when selected, the
-// costs when present, the audit rate and the certification parameters.
+// Validate checks the selectors and the keys added with the additive kernel,
+// costs and audits: the kernel type and featurizer name, the additive
+// kernel's parameters when selected, the costs when present, the audit rate
+// and the certification parameters.
 func (c Config) Validate() error {
 	switch c.Kernel.Type {
 	case "", KernelProduct:

@@ -1,6 +1,6 @@
 /-
-Proposition 3 (manuscript §5): the escalation floor is a property of the
-supervisor, not of the learner.
+Proposition 3 (manuscript, decision rule): the escalation floor is a property
+of the supervisor, not of the learner.
 
 Even with perfect knowledge of the true approval probability `q x = Φ(f*(x))`,
 any policy that is optimal under the Chow loss must escalate every action with

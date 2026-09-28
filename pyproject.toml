@@ -1,7 +1,7 @@
 [project]
 name = "trustcalib-experiment"
 version = "0.1.0"
-description = "Progressive Autonomy as Preference Learning: a GP-probit policy-gateway experiment on the AgentSec dataset"
+description = "Simulation studies for Progressive Autonomy as Preference Learning: a GP-probit escalation gateway with a known oracle"
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.0",

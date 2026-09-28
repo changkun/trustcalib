@@ -1,7 +1,8 @@
 /-
-Proposition 1 (manuscript §3; corrects Remark 1 of version 1): unary approve/deny feedback
-identifies the latent tolerance, and hence the allow/deny boundary `{f > 0}`;
-pairwise comparisons cannot, because they are invariant to adding a constant.
+Proposition 1 (manuscript, latent tolerance and identifiability): unary
+approve/deny feedback identifies the latent tolerance, and hence the allow/deny
+boundary `{f > 0}`; pairwise comparisons cannot, because they are invariant to
+adding a constant.
 
 The link `Φ` is kept abstract; only strict monotonicity is used (the standard
 normal CDF and the logistic function both qualify).

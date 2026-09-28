@@ -1,7 +1,7 @@
-"""Regression test for the headline operational claim (Section 11): with the
+"""Regression test for the headline operational claim (Experiments): with the
 additive kernel and the cost-derived symmetric band, the gateway auto-decides
 most actions accurately and safely while spending far fewer human labels than
-the always-escalate status quo, and fewer than the v1 product kernel."""
+the always-escalate status quo, and fewer than the separable product kernel."""
 
 import numpy as np
 

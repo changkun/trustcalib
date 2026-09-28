@@ -1,8 +1,8 @@
-"""Structured kernels over (action, context, time) (manuscript Section 4).
+"""Structured kernels over (action, context, time) (manuscript: the GP prior).
 
 Two kernels share the same feature blocks:
 
-* :class:`ProductKernel` (the v1 kernel, kept as the reference)
+* :class:`ProductKernel` (the separable baseline)
 
       k = sigma^2 * k_tool * k_ctx * k_time
 
@@ -10,14 +10,14 @@ Two kernels share the same feature blocks:
   the static risk structure of an action, is forgotten at rate ``1/lam``
   (manuscript Proposition 4).
 
-* :class:`AdditiveKernel` (the v2 kernel)
+* :class:`AdditiveKernel` (the proposed kernel)
 
       k = s_static * k_tool * k_ctx            static action risk r(x)
         + s_global * k_time                    shared tolerance tau(t)
         + s_inter  * k_tool * k_ctx * k_time   local drift
 
   mirroring the decomposition ``f(x, t) = tau(t) - r(x)`` (manuscript
-  Section 3). Only the time-coupled components forget; the static part does
+  Definition 1). Only the time-coupled components forget; the static part does
   not, and every label updates the shared tolerance ``tau(t)``.
 
 Block kernels:
@@ -109,7 +109,7 @@ class _KernelBase:
 
 @dataclass
 class ProductKernel(_KernelBase):
-    """v1 separable kernel ``sigma2 * k_tool * k_ctx * k_time``."""
+    """Separable kernel ``sigma2 * k_tool * k_ctx * k_time``."""
 
     sigma2: float = 1.6
     l_tool: float = 1.1
@@ -133,7 +133,7 @@ class ProductKernel(_KernelBase):
 
 @dataclass
 class AdditiveKernel(_KernelBase):
-    """v2 kernel ``s_static k_x + s_global k_time + s_inter k_x k_time``."""
+    """Additive kernel ``s_static k_x + s_global k_time + s_inter k_x k_time``."""
 
     s_static: float = 1.6
     s_global: float = 1.0

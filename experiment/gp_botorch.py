@@ -1,13 +1,13 @@
-"""Optional BoTorch ``PairwiseGP`` comparison (not part of the v2 pipeline).
+"""Optional BoTorch ``PairwiseGP`` comparison (not part of the pipeline).
 
-Version 1 of the manuscript described the unary approve/deny model as a
-degenerate pairwise comparison against a fixed reference. Version 2 corrects
-this (Proposition 1): pairwise comparisons identify the latent function only up
-to a constant, so they cannot locate the approve/deny threshold, which is
-exactly the information unary feedback carries.
+The unary approve/deny model is sometimes described as a degenerate pairwise
+comparison against a fixed reference. It is not (Proposition 1): pairwise
+comparisons identify the latent function only up to a constant, so they cannot
+locate the approve/deny threshold, which is exactly the information unary
+feedback carries.
 
-This module keeps the v1 encoding for readers who want to compare against a
-maintained preference-learning implementation. Each observation becomes a
+This module keeps that pairwise encoding for readers who want to compare
+against a maintained preference-learning implementation. Each observation becomes a
 comparison between the action ``x`` and a reference point ``r``:
 
 * ``y = 1`` (approve)  ->  ``x`` preferred over ``r``

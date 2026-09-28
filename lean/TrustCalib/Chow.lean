@@ -1,6 +1,6 @@
 /-
-Proposition 2 (manuscript §5): the three-tier gateway rule is the Bayes-optimal
-one-step decision under Chow's reject-option loss.
+Proposition 2 (manuscript, decision rule): the three-tier gateway rule is the
+Bayes-optimal one-step decision under Chow's reject-option loss.
 
 Costs: a false ALLOW costs `cFA`, a false BLOCK costs `cFB`, an escalation (ASK)
 costs `cAsk`; all strictly positive. For a belief `p = P(approve)` the expected

@@ -26,9 +26,9 @@ func TestCostsClosedForm(t *testing.T) {
 	}
 }
 
-// TestCostsSymmetricIsV1Band: the v1 band (0.35, 0.65) is the Chow rule with
-// symmetric costs c_FA = c_FB = c_ask/0.35.
-func TestCostsSymmetricIsV1Band(t *testing.T) {
+// TestCostsSymmetricIsDefaultBand: the default band (0.35, 0.65) is the Chow
+// rule with symmetric costs c_FA = c_FB = c_ask/0.35.
+func TestCostsSymmetricIsDefaultBand(t *testing.T) {
 	for _, c := range []Costs{SymmetricCosts(0.35), {FalseAllow: 1 / 0.35, FalseBlock: 1 / 0.35, Ask: 1}} {
 		lo, hi := c.Band()
 		if !approx(lo, 0.35) || !approx(hi, 0.65) {
@@ -119,7 +119,7 @@ func TestConfigThresholds(t *testing.T) {
 }
 
 // TestTuneDegeneratesOnEscalatedHistory ports test_chow.py: fed only (p_hat,
-// label) pairs recorded at ASK time, every p_hat is inside the band and the v1
+// label) pairs recorded at ASK time, every p_hat is inside the band and the
 // grid search returns the default band.
 func TestTuneDegeneratesOnEscalatedHistory(t *testing.T) {
 	rng := rand.New(rand.NewSource(0))

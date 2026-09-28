@@ -1,4 +1,4 @@
-"""Extension study: calibrating an opaque judge (manuscript Section 12).
+"""Calibrating an opaque judge (manuscript: the opaque-judge experiment).
 
 Pre-registered in ``experiment/judge_prereg.md``. Writes ``report_judge.md``,
 ``results_judge.json``, ``figures/judge_reliability.pdf`` and
@@ -20,8 +20,10 @@ import matplotlib  # noqa: E402
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 import numpy as np  # noqa: E402
 
+from . import plotting  # noqa: E402
 from .data import CATEGORIES, make_stream  # noqa: E402
 from .eval import SCORED, phase_metrics, scored_queries  # noqa: E402
 from .gateway import ALLOW, ASK, SAFETY, SYMMETRIC, run_gateway  # noqa: E402
@@ -247,26 +249,44 @@ def SAFE_REG(res, p):
 
 
 def fig_reliability(res):
-    fig, ax = plt.subplots(figsize=(6.4, 4.2))
+    """The same judge's error rates for this supervisor in three windows: the
+    truth and the per-seed Horvitz-Thompson estimates from the gateway's labels."""
+    plotting.apply()
+    col = plotting.COLORS
+    fig, axes = plt.subplots(1, 2, figsize=(plotting.TEXT_WIDTH, 2.2))
     x = np.arange(len(WINDOWS))
-    for side, col, lab in (("allow", "#DC2626", "P(deny | judge ALLOW)"),
-                           ("block", "#0D9488", "P(approve | judge BLOCK)")):
+    rng = np.random.default_rng(0)  # jitter only
+    panels = (("allow", "fa", "a", r"False-allow rate $\Pr(\mathrm{deny} \mid$ judge ALLOW$)$"),
+              ("block", "fb", "b", r"False-block rate $\Pr(\mathrm{approve} \mid$ judge BLOCK$)$"))
+    for ax, (side, ckey, letter, ttl) in zip(axes, panels):
         rs = [[res[("calibrated+audit", "verdict", "symmetric", s)]["reliability"][f"{lo}-{hi}"][side]
                for s in SEEDS] for lo, hi in WINDOWS]
-        truth = [np.mean([r["truth"] for r in w]) for w in rs]
-        est = [np.mean([r["est"] for r in w]) for w in rs]
-        sd = [np.std([r["est"] for r in w]) for w in rs]
-        ax.plot(x, truth, "o-", color=col, lw=2, label=f"{lab}, truth")
-        ax.errorbar(x + 0.05, est, yerr=sd, fmt="s--", color=col, alpha=0.7, capsize=3,
-                    label=f"{lab}, audit estimate")
-    ax.set_xticks(x)
-    ax.set_xticklabels(["before reset\n[560,750)", "after reset\n[750,1050)", "late\n[1050,1500)"])
-    ax.set_ylim(0, 1)
-    ax.set_ylabel("judge error rate for this supervisor")
-    fig.legend(fontsize=7, loc="lower center", ncol=2, frameon=False)
-    fig.tight_layout(rect=(0, 0.16, 1, 1))
-    fig.savefig(os.path.join(FIGDIR, "judge_reliability.pdf"))
-    plt.close(fig)
+        truth = np.array([np.mean([r["truth"] for r in w]) for w in rs])
+        est = [np.array([r["est"] for r in w]) for w in rs]
+        for xi, e in zip(x, est):
+            ax.scatter(xi + 0.16 + rng.uniform(-0.05, 0.05, len(e)), e, s=7, color=col[ckey],
+                       alpha=0.45, lw=0, zorder=2, clip_on=False)
+        ax.plot(x + 0.16, [np.mean(e) for e in est], "D", color=col[ckey], ms=4, mec="white",
+                mew=0.5, zorder=3)
+        ax.plot(x, truth, "o-", color=col["oracle"], ms=3.5, lw=1.1, zorder=4)
+        top = max(float(np.max(np.concatenate(est))), float(truth.max()))
+        hi = max(1.0, 1.03 * top) if side == "block" else 1.12 * top
+        ax.set_ylim(-0.02 * hi, hi)
+        ax.set_xlim(-0.35, len(WINDOWS) - 0.55)
+        ax.set_xticks(x + 0.08)
+        ax.set_xticklabels(["before reset\n$[560, 750)$", "after reset\n$[750, 1050)$",
+                            "late\n$[1050, 1500)$"])
+        ax.tick_params(axis="x", length=0)
+        plotting.panel(ax, letter, ttl)
+    axes[0].set_ylabel("rate for this supervisor")
+    handles = [Line2D([], [], color=col["oracle"], marker="o", ms=3.5, lw=1.1, label="true rate"),
+               Line2D([], [], color="#6B7280", marker="o", ms=3, lw=0, alpha=0.6,
+                      label="audit estimate, one seed"),
+               Line2D([], [], color="#6B7280", marker="D", ms=4, mec="white", mew=0.5, lw=0,
+                      label="mean of the estimates")]
+    axes[0].legend(handles=handles, loc="upper left")
+    fig.tight_layout(w_pad=2.0)
+    plotting.save(fig, os.path.join(FIGDIR, "judge_reliability.pdf"))
 
 
 if __name__ == "__main__":

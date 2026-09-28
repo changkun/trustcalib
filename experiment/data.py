@@ -13,7 +13,7 @@ provenance but has no human-feedback, risk or preference labels; R-Judge has
 human safe/unsafe labels but is static and aggregated. We therefore build a
 purpose-built generator that *is* the manuscript's generative model: a
 realistic agent-tool taxonomy with interpretable risk attributes, a latent
-``f*`` with Section 6 trust drift and an abrupt changepoint, and the probit
+``f*`` with trust drift and an abrupt changepoint, and the probit
 observation model. The ground-truth oracle lives in :mod:`experiment.oracle`;
 this module owns only the action/context space and the stream sampler.
 
@@ -131,13 +131,13 @@ class DecisionPoint:
         sensitivity, blast radius, category one-hot). It deliberately omits a
         per-tool one-hot: a one-hot would put every distinct tool at the same
         fixed distance regardless of similarity, defeating the correlated
-        generalization of Section 7. With the semantic descriptor, similar
+        generalization (manuscript: correlated generalization). With the semantic descriptor, similar
         tools (same category, similar reversibility/blast) are genuinely close
         and share evidence; tool identity is still available to the
         independent baseline via ``Packed.tool_id``. ``phi_ctx`` holds the
         observable context: target sensitivity, the destructive-argument flag,
         and a task one-hot. The kernel never sees the oracle's time-varying
-        veto conjunction (Section 6 drift x a three-way interaction), so the
+        veto conjunction (trust drift x a three-way interaction), so the
         gateway must learn that region from labelled evidence through the
         kernel and ``k_time``.
         """
@@ -182,7 +182,7 @@ def make_stream(n: int, seed: int) -> list[DecisionPoint]:
     Time index ``t`` runs ``0..n-1`` and feeds both ``k_time`` and the
     oracle's drift. Unlike a fixed corpus, the generator produces a fresh,
     arbitrarily long, diverse stream, so the longitudinal non-stationary
-    structure the manuscript's Section 6 needs is built in by construction.
+    structure the manuscript's drift model needs is built in by construction.
     """
     rng = np.random.default_rng(seed)
     tools_by_cat: dict[str, list[Tool]] = {c: [] for c in CATEGORIES}

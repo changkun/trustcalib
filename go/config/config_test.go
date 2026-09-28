@@ -80,7 +80,7 @@ func TestBuilders(t *testing.T) {
 	}
 }
 
-func TestDefaultV2Keys(t *testing.T) {
+func TestDefaultAuditAndCostKeys(t *testing.T) {
 	c := Default()
 	if c.KernelType() != KernelProduct || c.FeaturizerName() != FeaturizerTaxonomy {
 		t.Errorf("selectors: kernel %q featurizer %q", c.KernelType(), c.FeaturizerName())
@@ -114,7 +114,7 @@ func TestDefaultV2Keys(t *testing.T) {
 	}
 }
 
-func TestLoadV2Keys(t *testing.T) {
+func TestLoadAuditAndCostKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "c.yaml")
 	yaml := `kernel:
   type: additive
@@ -172,7 +172,7 @@ featurizer: judge
 	}
 }
 
-func TestLoadRejectsInvalidV2Keys(t *testing.T) {
+func TestLoadRejectsInvalidAuditAndCostKeys(t *testing.T) {
 	cases := map[string]string{
 		"kernel type":     "kernel:\n  type: spline\n",
 		"featurizer":      "featurizer: magic\n",

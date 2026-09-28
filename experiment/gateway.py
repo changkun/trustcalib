@@ -1,6 +1,6 @@
 """Policy gateway: Chow three-tier decision rule, audits, and the online loop.
 
-Manuscript Section 5. Given the posterior-predictive approval probability
+Manuscript: the decision rule. Given the posterior-predictive approval probability
 ``p_hat(x_*) = E[Phi(f(x_*))]`` the gateway emits
 
     ALLOW  if p_hat > tau_high
@@ -13,10 +13,10 @@ machine-checked in ``lean/TrustCalib/Chow.lean``) with
 
     tau_high = 1 - c_ask / c_FA,    tau_low = c_ask / c_FB,
 
-and the ASK band is non-empty iff ``c_ask (c_FA + c_FB) < c_FA c_FB``. The v1
-band ``(0.35, 0.65)`` is exactly this rule with symmetric costs
-``c_FA = c_FB = c_ask / 0.35``. Thresholds are therefore *specified*, never
-tuned on labels (v1 tuned them on oracle labels, which no deployment has).
+and the ASK band is non-empty iff ``c_ask (c_FA + c_FB) < c_FA c_FB``. The
+symmetric band ``(0.35, 0.65)`` is this rule with ``c_FA = c_FB = c_ask / 0.35``.
+Thresholds are therefore *specified*, never tuned on labels: tuning needs
+labels on auto-decided actions, which no deployment has.
 
 Labels. An ASK sends the action to the human, whose approve/deny becomes a
 training label. ALLOW/BLOCK are auto-decided and produce no label, so their
@@ -25,7 +25,7 @@ auto-decided action is also shown to the human with probability ``eps``; the
 audited labels train the model and give an unbiased inverse-propensity estimate
 of the false-allow rate (Proposition 5, ``lean/TrustCalib/Audit.lean``).
 
-Query strategies (the acquisition probe, Section 11) differ only in *which*
+Query strategies (the acquisition experiment) differ only in *which*
 actions get a human label, at a matched budget:
 
 * ``escalate``  label iff the decision is ASK (plus audits), the operational
@@ -37,7 +37,7 @@ actions get a human label, at a matched budget:
 
 The stream is processed prequentially: every decision is made, and logged,
 before any label at that step exists. Phases: ``learn`` (warm-up, not scored),
-``early`` (contains the Section 6 changepoint) and ``late``.
+``early`` (contains the trust changepoint) and ``late``.
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ class Costs:
 
 
 # The two operating points used in the paper.
-SYMMETRIC = Costs.symmetric_from_band(0.35)          # band (0.35, 0.65), v1
+SYMMETRIC = Costs.symmetric_from_band(0.35)          # band (0.35, 0.65)
 SAFETY = Costs(c_fa=10.0, c_fb=4.0, c_ask=1.0)       # band (0.25, 0.90)
 
 
@@ -267,12 +267,12 @@ def tune_thresholds(
     safety_eps: float = 0.02,
     block_eps: float = 0.05,
 ) -> tuple[float, float]:
-    """v1 grid-search threshold tuning, kept only as the reference for the Go
-    port's ``gateway.TuneThresholds``. Not used by the v2 pipeline.
+    """Grid-search threshold tuning on labels, kept only as the reference for
+    the Go ``gateway.TuneThresholds``; not used by the pipeline.
 
-    Two problems make it unsuitable (manuscript Section 5): v1 called it with
-    oracle labels for every validation action, including auto-decided ones
-    for which no deployment has a label; and fed only the escalated history a
+    Two problems make it unsuitable (manuscript: the decision rule): run with
+    labels for every validation action it needs labels on auto-decided
+    actions, which no deployment has; and fed only the escalated history a
     deployment actually has, every ``p_hat`` lies inside the current band, no
     candidate pair meets the caps, and it returns the default band.
     """

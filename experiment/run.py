@@ -1,4 +1,4 @@
-"""Run the progressive-autonomy simulation study (manuscript Section 11).
+"""Run the progressive-autonomy simulation study (manuscript, Experiments).
 
 WHAT THIS DOES AND DOES NOT SHOW
 --------------------------------
@@ -18,8 +18,10 @@ Usage:  uv run python -m experiment.run
 
 from __future__ import annotations
 
+import copy
 import json
 import os
+import warnings
 from concurrent.futures import ProcessPoolExecutor
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -30,8 +32,11 @@ import matplotlib  # noqa: E402
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
+from matplotlib.patches import Patch  # noqa: E402
 import numpy as np  # noqa: E402
 
+from . import plotting  # noqa: E402
 from .data import TOOLS, DecisionPoint, make_stream  # noqa: E402
 from .eval import (  # noqa: E402
     SCORED,
@@ -90,7 +95,7 @@ def m_per_cell():
     return CellModel()
 
 
-def m_product_v1():
+def m_product():
     return LaplaceGPC(ProductKernel(sigma2=1.6, l_tool=1.1, l_ctx=1.2, lam=90.0))
 
 
@@ -104,7 +109,7 @@ def m_linear_eb():
 
 
 def m_additive():
-    # Pre-registered in the v1 review before any v2 run: 1.6 / 1.0 / 0.6, lam = 90.
+    # Fixed before any run: 1.6 / 1.0 / 0.6, lam = 90.
     return LaplaceGPC(AdditiveKernel(1.6, 1.0, 0.6, lam=90.0))
 
 
@@ -116,22 +121,22 @@ def m_additive_eb():
 MODELS = {
     "per-tool": m_per_tool,
     "per-cell": m_per_cell,
-    "product-v1": m_product_v1,
+    "product": m_product,
     "product-EB": m_product_eb,
     "linear-EB": m_linear_eb,
     "additive": m_additive,
     "additive-EB": m_additive_eb,
 }
 LABELS = {
-    "per-tool": "Per-tool Beta (v1 baseline)",
+    "per-tool": "Per-tool Beta",
     "per-cell": "Per-cell Beta",
-    "product-v1": r"Product, $\lambda{=}90$ (v1)",
+    "product": r"Product, $\lambda{=}90$",
     "product-EB": "Product, evidence-selected",
     "linear-EB": "Linear probit + drift, ev.-sel.",
-    "additive": r"Additive, $\lambda{=}90$ (v2)",
+    "additive": r"Additive, $\lambda{=}90$",
     "additive-EB": "Additive, evidence-selected",
 }
-GP_MODELS = ["product-v1", "product-EB", "linear-EB", "additive", "additive-EB"]
+GP_MODELS = ["product", "product-EB", "linear-EB", "additive", "additive-EB"]
 
 
 def _cfg(name: str = "changepoint") -> OracleConfig:
@@ -177,19 +182,19 @@ def job_main(spec):
     res = run_gateway(stream, MODELS[model](), np.random.default_rng(seed), cfg, T_WARM, T_LATE,
                       band=COSTS[costs].band, audit_rate=eps)
     out = summarize(res, stream, cfg, COSTS[costs])
-    if seed == 0 and costs == "symmetric" and eps == 0:
+    if costs == "symmetric" and eps == 0:
         out["_reliability"] = phase_metrics(res, SCORED)["_reliability"]
+    if seed == 0 and costs == "symmetric" and eps == 0:
         out["_trajectory"] = {k: v.tolist() for k, v in policy_trajectory(res, 70).items()}
-        out["_cum_queries"] = np.cumsum([s.queried for s in res.steps]).tolist()
-    if model == "product-v1" and costs == "symmetric" and eps == 0:
-        # Evidence ranking on the labels the v1 gateway actually collected.
+    if model == "product" and costs == "symmetric" and eps == 0:
+        # Evidence ranking on the labels the product-kernel gateway actually collected.
         fm = res.final_model
         P, y = fm._P, (fm._y > 0).astype(int)
         cands = {
-            "product λ=90 (v1)": ProductKernel(1.6, 1.1, 1.2, 90.0),
+            "product λ=90": ProductKernel(1.6, 1.1, 1.2, 90.0),
             "product λ=480": ProductKernel(1.6, 1.1, 1.2, 480.0),
             "linear+drift λ=90": LinearKernel(lam=90.0),
-            "additive λ=90 (v2)": AdditiveKernel(1.6, 1.0, 0.6, lam=90.0),
+            "additive λ=90": AdditiveKernel(1.6, 1.0, 0.6, lam=90.0),
             "additive λ=480": AdditiveKernel(1.6, 1.0, 0.6, lam=480.0),
         }
         out["_evidence"] = {k: LaplaceGPC(kk).fit(P, y).log_marginal for k, kk in cands.items()}
@@ -199,7 +204,7 @@ def job_main(spec):
 def job_acq(spec):
     kernel, oracle, seed = spec
     stream, cfg = _stream(seed), _cfg(oracle)
-    mk = {"product-v1": m_product_v1, "additive": m_additive}[kernel]
+    mk = {"product": m_product, "additive": m_additive}[kernel]
     ra = run_gateway(stream, mk(), np.random.default_rng(seed), cfg, T_WARM, T_LATE)
     rate = sum(s.queried for s in ra.steps) / N
     rr = run_gateway(stream, mk(), np.random.default_rng(100 + seed), cfg, T_WARM, T_LATE,
@@ -232,6 +237,15 @@ def job_hold(spec):
     return spec, out
 
 
+def job_probe(spec):
+    """Track the probe action's p_hat through one run (figure only)."""
+    kernel, seed = spec
+    mk = {"product": m_product, "additive": m_additive}[kernel]
+    res = run_gateway(_stream(seed), mk(), np.random.default_rng(seed), _cfg(), T_WARM, T_LATE,
+                      probe=_probe_action())
+    return spec, [(t, p) for t, p, _ in res.probe_trace]
+
+
 def _pool_map(fn, specs):
     with ProcessPoolExecutor(max_workers=max(1, (os.cpu_count() or 2) - 2)) as ex:
         return dict(ex.map(fn, specs, chunksize=1))
@@ -253,86 +267,69 @@ def paired(a, b) -> tuple[float, float, int, int]:
 # --------------------------------------------------------------------------- #
 # Figures
 # --------------------------------------------------------------------------- #
-C_V1, C_V2, C_LIN, C_REF = "#6B7280", "#0D9488", "#7C3AED", "#DC2626"
+COL = plotting.COLORS
+VETO_END = CHANGEPOINT + int(np.ceil(OracleConfig().kappa * np.log(2.0)))  # trust < theta/2
+DECISIONS = (("allow", "ALLOW (auto)"), ("ask", "ASK (escalate)"), ("block", "BLOCK (auto)"))
+
+
+def _mark_time(ax, x, text, color="white"):
+    ax.axvline(x, color=plotting.COLORS["marker"], ls=(0, (3, 2)), lw=0.7)
+    ax.text(x - 12, 0.03, text, rotation=90, ha="right", va="bottom", fontsize=6.5, color=color)
 
 
 def fig_policy_evolution(main, path):
-    fig, axes = plt.subplots(1, 2, figsize=(11, 3.8), sharey=True)
-    for ax, model, ttl in ((axes[0], "product-v1", r"v1: product kernel, $\lambda=90$"),
-                           (axes[1], "additive", r"v2: additive kernel, $\lambda=90$")):
+    """Rolling decision mix over the stream for the two kernels (seed 0)."""
+    fig, axes = plt.subplots(1, 2, figsize=(plotting.TEXT_WIDTH, 2.35), sharey=True)
+    for ax, model, letter, ttl in ((axes[0], "product", "a", "Product kernel"),
+                                   (axes[1], "additive", "b", "Additive kernel")):
         tr = main[(model, "symmetric", 0.0, 0)]["_trajectory"]
         ax.stackplot(tr["t"], tr["allow"], tr["ask"], tr["block"],
-                     labels=["ALLOW (auto)", "ASK (escalate)", "BLOCK (auto)"],
-                     colors=["#0D9488", "#F59E0B", "#DC2626"], alpha=0.9)
-        ax.axvline(CHANGEPOINT, color="k", ls="--", lw=1)
-        ax.axvline(T_WARM, color="white", ls=":", lw=1)
+                     labels=[lab for _, lab in DECISIONS],
+                     colors=[COL[k] for k, _ in DECISIONS], alpha=0.88, lw=0)
+        _mark_time(ax, T_WARM, "warm-up ends")
+        _mark_time(ax, CHANGEPOINT, "trust reset")
+        # veto window: bracket above the plot
+        tf = ax.get_xaxis_transform()
+        ax.plot([CHANGEPOINT, VETO_END], [1.025, 1.025], color=COL["block"], lw=1.6,
+                transform=tf, clip_on=False, solid_capstyle="butt")
+        ax.text((CHANGEPOINT + VETO_END) / 2, 1.045, "veto", transform=tf, ha="center",
+                va="bottom", fontsize=6.5, color=COL["block"])
         ax.set_xlim(0, N - 1)
         ax.set_ylim(0, 1)
-        ax.set_xlabel("decision point t")
-        ax.set_title(ttl, fontsize=10)
-    axes[0].set_ylabel("rolling policy mix (window 70)")
-    axes[1].legend(loc="lower right", fontsize=8, framealpha=0.9)
-    fig.tight_layout()
-    fig.savefig(path)
-    plt.close(fig)
+        ax.set_xlabel(r"decision point $t$")
+        plotting.panel(ax, letter, ttl)
+    axes[0].set_ylabel("share of decisions\n(rolling 70 steps, seed 0)")
+    h, lab = axes[0].get_legend_handles_labels()
+    fig.legend(h, lab, loc="lower center", ncol=3, bbox_to_anchor=(0.5, 0.99))
+    fig.tight_layout(w_pad=1.2)
+    plotting.save(fig, path)
 
 
-def fig_query_savings(main, path):
-    fig, ax = plt.subplots(figsize=(6.4, 3.8))
-    idx = np.arange(N)
-    ax.plot(idx, idx + 1, color=C_REF, ls="--", label="always escalate (status quo)")
-    for model, col, lab in (("product-v1", C_V1, "v1 product kernel"),
-                            ("additive", C_V2, "v2 additive kernel")):
-        cum = np.asarray(main[(model, "symmetric", 0.0, 0)]["_cum_queries"])
-        ax.plot(idx, cum, color=col, lw=2, label=f"{lab}: {cum[-1]} labels")
-    ax.axvline(T_WARM, color="gray", ls=":", lw=1)
-    ax.axvline(CHANGEPOINT, color="k", ls="--", lw=0.8)
-    ax.set_xlabel("decision point t")
-    ax.set_ylabel("cumulative human queries")
-    ax.legend(loc="upper left", fontsize=8)
-    fig.tight_layout()
-    fig.savefig(path)
-    plt.close(fig)
-
-
-def fig_calibration(main, path):
-    fig, ax = plt.subplots(figsize=(4.4, 4.2))
-    ax.plot([0, 1], [0, 1], color="k", ls="--", lw=1, label="perfect")
-    for model, col, lab in (("product-v1", C_V1, "v1 product"), ("additive", C_V2, "v2 additive"),
-                            ("linear-EB", C_LIN, "linear + drift")):
-        bins = main[(model, "symmetric", 0.0, 0)]["_reliability"]
-        xs = [b[0] for b in bins if b[2] > 0]
-        ys = [b[1] for b in bins if b[2] > 0]
-        ax.plot(xs, ys, "o-", color=col, label=lab, ms=4)
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.set_xlabel(r"predicted approval probability $\hat p$")
-    ax.set_ylabel(r"true probability $\Phi(f^*)$ (bin mean)")
-    ax.legend(loc="upper left", fontsize=8)
-    fig.tight_layout()
-    fig.savefig(path)
-    plt.close(fig)
-
-
-def fig_drift(path):
-    stream, cfg, probe = _stream(0), _cfg(), _probe_action()
-    fig, ax = plt.subplots(figsize=(6.4, 3.8))
-    first = True
-    for mk, col, lab in ((m_product_v1, C_V1, "v1 product"), (m_additive, C_V2, "v2 additive")):
-        res = run_gateway(stream, mk(), np.random.default_rng(0), cfg, N, N, probe=probe)
-        arr = np.asarray(res.probe_trace)
-        if first:
-            ax.plot(arr[:, 0], arr[:, 2], color="k", lw=2, label=r"oracle $\Phi(f^*)$")
-            first = False
-        ax.plot(arr[:, 0], arr[:, 1], color=col, lw=1.4, label=f"{lab} " + r"$\hat p$")
-    ax.axvline(CHANGEPOINT, color=C_REF, ls="--", lw=1, label="trust changepoint")
-    ax.set_ylim(0, 1)
-    ax.set_xlabel("decision point t")
-    ax.set_ylabel("approval probability, fixed probe action")
-    ax.legend(loc="lower right", fontsize=8)
-    fig.tight_layout()
-    fig.savefig(path)
-    plt.close(fig)
+def probe_traces(probe_runs):
+    """Mean and 25-75% band of the probe action's p_hat across seeds, on a
+    common grid (each seed's trace is held constant between refits)."""
+    grid = np.arange(0, N, 5)
+    out = {}
+    for kern in ("product", "additive"):
+        rows = []
+        for s in SEEDS:
+            arr = np.asarray(probe_runs[(kern, s)])
+            idx = np.searchsorted(arr[:, 0], grid, side="right") - 1
+            v = np.where(idx >= 0, arr[np.clip(idx, 0, None), 1], np.nan)
+            rows.append(v)
+        rows = np.asarray(rows)
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # before the first fit
+            out[kern] = (np.nanmean(rows, 0), np.nanpercentile(rows, 25, 0),
+                         np.nanpercentile(rows, 75, 0))
+    probe = _probe_action()
+    cfg = _cfg()
+    truth = []
+    for t in grid:
+        pr = copy.copy(probe)
+        pr.t = int(t)
+        truth.append(approve_prob(pr, cfg))
+    return grid, out, np.asarray(truth)
 
 
 def forgetting_curves():
@@ -340,7 +337,7 @@ def forgetting_curves():
     predict fixed actions at t0 + Delta with no further labels."""
     stream, cfg = _stream(0), _cfg("stationary")
     t0 = 700
-    res = run_gateway(stream[:t0], m_product_v1(), np.random.default_rng(0), cfg, t0, t0)
+    res = run_gateway(stream[:t0], m_product(), np.random.default_rng(0), cfg, t0, t0)
     pts = [d for d, s in zip(stream[:t0], res.steps) if s.queried]
     ys = [s.y for s in res.steps if s.queried]
     acts = {
@@ -361,49 +358,132 @@ def forgetting_curves():
     return deltas, out, list(acts)
 
 
-def fig_forgetting(path):
+def _pooled_reliability(main, model):
+    """Reliability curve pooled over seeds; every seed scores the same number
+    of decisions, so bin fractions are exact pooling weights."""
+    bins = [main[(model, "symmetric", 0.0, s)]["_reliability"] for s in SEEDS]
+    xs, ys, ws = [], [], []
+    for b in range(len(bins[0])):
+        w = np.array([bs[b][2] for bs in bins])
+        if w.sum() == 0:
+            continue
+        xs.append(sum(bs[b][0] * bs[b][2] for bs in bins if bs[b][2] > 0) / w.sum())
+        ys.append(sum(bs[b][1] * bs[b][2] for bs in bins if bs[b][2] > 0) / w.sum())
+        ws.append(w.mean())
+    return np.array(xs), np.array(ys), np.array(ws)
+
+
+def _tt(name):
+    return r"$\mathtt{" + name.replace("_", r"\_") + "}$"
+
+
+def fig_forgetting(main, probe_runs, path):
+    """(a) Forgetting on a fixed training set, (b) tracking a probe action under
+    drift, (c) the resulting calibration, pooled over seeds."""
     deltas, out, acts = forgetting_curves()
-    fig, ax = plt.subplots(figsize=(6.4, 3.8))
-    ax.axhspan(SYMMETRIC.tau_low, SYMMETRIC.tau_high, color="#F59E0B", alpha=0.15,
-               label="ASK band (0.35, 0.65)")
-    for aname, ls in zip(acts, ("-", "--")):
-        ax.plot(deltas, out[("product", aname)], color=C_V1, ls=ls, lw=2,
-                label=f"product: {aname}")
-        ax.plot(deltas, out[("additive", aname)], color=C_V2, ls=ls, lw=2,
-                label=f"additive: {aname}")
-    ax.set_ylim(0, 1)
-    ax.set_xlabel(r"steps $\Delta$ since the last label")
-    ax.set_ylabel(r"predicted approval $\hat p$")
-    ax.legend(loc="lower right", fontsize=7)
-    fig.tight_layout()
-    fig.savefig(path)
-    plt.close(fig)
+    fig = plt.figure(figsize=(plotting.TEXT_WIDTH, 2.25))
+    gs = fig.add_gridspec(1, 3, width_ratios=[1.2, 1.3, 0.92], wspace=0.34,
+                          left=0.07, right=0.995, bottom=0.17, top=0.9)
+    ax_a, ax_b, ax_c = (fig.add_subplot(gs[0, i]) for i in range(3))
+
+    # (a) forgetting
+    ax_a.axhspan(SYMMETRIC.tau_low, SYMMETRIC.tau_high, color=COL["ask"], alpha=0.16, lw=0)
+    ax_a.text(15, SYMMETRIC.tau_low + 0.015, "ASK band", fontsize=6.5, color="#92400E", va="bottom")
+    for aname, ls in zip(acts, ("-", (0, (4, 2)))):
+        for kern in ("product", "additive"):
+            ax_a.plot(deltas, out[(kern, aname)], color=COL[kern], ls=ls)
+    end = {k: out[(k, acts[0])][-1] for k in ("product", "additive")}
+    ax_a.text(795, end["additive"] + 0.025, "additive", color=COL["additive"], ha="right",
+              va="bottom", fontsize=7)
+    ax_a.text(795, end["product"] + 0.025, "product", color=COL["product"], ha="right",
+              va="bottom", fontsize=7)
+    hs = [Line2D([], [], color="k", lw=1.0, ls=ls) for ls in ("-", (0, (4, 2)))]
+    names = [_tt(a.split(" → ")[0]) + r" $\to$ " + _tt(a.split(" → ")[1]) for a in acts]
+    ax_a.legend(hs, names, loc="lower left", fontsize=6.5, handlelength=2.2)
+    ax_a.set_xlim(0, 800)
+    ax_a.set_ylim(0, 1)
+    ax_a.set_xlabel(r"steps since the last label, $\Delta$")
+    ax_a.set_ylabel(r"predicted approval $\hat p$")
+    plotting.panel(ax_a, "a", "No new labels")
+
+    # (b) tracking under drift
+    grid, tr, truth = probe_traces(probe_runs)
+    ax_b.axvline(CHANGEPOINT, color=COL["marker"], ls=(0, (3, 2)), lw=0.7)
+    ax_b.text(CHANGEPOINT - 25, 0.03, "trust reset", rotation=90, fontsize=6.5,
+              color=COL["marker"], ha="right", va="bottom")
+    for kern in ("product", "additive"):
+        mean, lo, hi = tr[kern]
+        ax_b.fill_between(grid, lo, hi, color=COL[kern], alpha=0.18, lw=0)
+        ax_b.plot(grid, mean, color=COL[kern], lw=1.1, label=f"{kern} $\\hat p$")
+    ax_b.plot(grid, truth, color=COL["oracle"], lw=1.4, label=r"oracle $\Phi(f^*)$")
+    h, lab = ax_b.get_legend_handles_labels()
+    ax_b.legend(h[::-1], lab[::-1], loc="lower right", fontsize=6.5, handlelength=1.2)
+    ax_b.set_xlim(0, N)
+    ax_b.set_xticks([0, 500, 1000, 1500])
+    ax_b.set_ylim(0, 1)
+    ax_b.set_xlabel(r"decision point $t$")
+    ax_b.set_ylabel(r"approval probability")
+    plotting.panel(ax_b, "b", "One action under drift")
+
+    # (c) calibration
+    ax_c.plot([0, 1], [0, 1], color="#9CA3AF", ls=(0, (3, 2)), lw=0.8)
+    for model, key, lab in (("product", "product", "product"), ("additive", "additive", "additive"),
+                            ("linear-EB", "linear", "linear probit")):
+        xs, ys, _ = _pooled_reliability(main, model)
+        ax_c.plot(xs, ys, "o-", color=COL[key], ms=2.8, lw=1.0, label=lab)
+    ax_c.legend(loc="lower right", fontsize=6.5, handlelength=1.4)
+    ax_c.set_xlim(0, 1)
+    ax_c.set_ylim(0, 1)
+    ax_c.set_xticks(np.linspace(0, 1, 6))
+    ax_c.set_xlabel(r"predicted $\hat p$ (bin mean)")
+    ax_c.set_ylabel(r"true $\Phi(f^*)$ (bin mean)")
+    plotting.panel(ax_c, "c", "Calibration")
+    plotting.save(fig, path)
     return deltas, out, acts
 
 
+HOLD_MODELS = (("per-tool", "Per-tool Beta"), ("per-cell", "Per-cell Beta"),
+               ("product", "Product GP"), ("linear-EB", "Linear probit"),
+               ("additive", "Additive GP"))
+
+
 def fig_transfer(hold, path):
-    models = ["per-tool", "per-cell", "product-v1", "linear-EB", "additive"]
-    fig, axes = plt.subplots(1, 2, figsize=(10, 3.6))
-    for ax, hname in zip(axes, ("benign", "dangerous")):
-        acc = []
-        fa = []
-        for m in models:
+    """Decisions on the two never-labelled combinations, pooled over seeds."""
+    fig, axes = plt.subplots(1, 2, figsize=(plotting.TEXT_WIDTH, 1.95), sharey=True)
+    y = np.arange(len(HOLD_MODELS))[::-1]
+    for ax, hname, letter in zip(axes, ("benign", "dangerous"), ("a", "b")):
+        for yi, (m, _) in zip(y, HOLD_MODELS):
             rows = [hold[(m, hname, s)] for s in SEEDS]
             n = sum(r["n"] for r in rows)
-            acc.append(sum(r["correct_auto"] for r in rows) / max(n, 1))
-            fa.append(sum(r["false_allow"] for r in rows) / max(sum(r["n_deny"] for r in rows), 1))
-        x = np.arange(len(models))
-        ax.bar(x - 0.2, acc, 0.4, color=C_V2, label="correct auto-decision")
-        ax.bar(x + 0.2, fa, 0.4, color=C_REF, label="false-allow (of oracle denials)")
-        ax.set_xticks(x)
-        ax.set_xticklabels([m.replace("-EB", "") for m in models], fontsize=8, rotation=15)
+            shares = {k: sum(r[k] for r in rows) / n for k in ("allow", "ask", "block")}
+            fa = sum(r["false_allow"] for r in rows)
+            nd = sum(r["n_deny"] for r in rows)
+            left = 0.0
+            for k, _ in DECISIONS:
+                ax.barh(yi, shares[k], left=left, height=0.62, color=COL[k], alpha=0.88)
+                left += shares[k]
+            if hname == "dangerous":
+                ax.barh(yi, fa / n, left=0.0, height=0.62, facecolor="none",
+                        edgecolor="white", hatch="//////", lw=0)
+                ax.text(1.03, yi, f"{fa}/{nd} ({100 * fa / nd:.0f}%)", va="center", fontsize=6.5,
+                        transform=ax.get_yaxis_transform(), clip_on=False)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(-0.6, len(HOLD_MODELS) + 0.05)
+        ax.set_yticks(y)
+        ax.set_yticklabels([lab for _, lab in HOLD_MODELS])
+        ax.tick_params(axis="y", length=0)
+        ax.spines["left"].set_visible(False)
+        ax.set_xlabel("share of occurrences (10 seeds pooled)")
         tool, target = HOLDOUTS[hname]
-        ax.set_title(f"{hname}: {tool} → {target} (never labelled)", fontsize=9)
-        ax.set_ylim(0, 1)
-    axes[0].legend(fontsize=8, loc="upper left")
-    fig.tight_layout()
-    fig.savefig(path)
-    plt.close(fig)
+        plotting.panel(ax, letter, f"{hname.capitalize()}: {_tt(tool)}" + r" $\to$ " + _tt(target))
+    axes[1].text(1.03, len(HOLD_MODELS) - 0.62, "denials allowed", fontsize=6.5,
+                 va="bottom", transform=axes[1].get_yaxis_transform(), clip_on=False)
+    handles = [Patch(color=COL[k], alpha=0.88, label=lab) for k, lab in DECISIONS]
+    handles.append(Patch(facecolor=COL["allow"], alpha=0.88, edgecolor="white", hatch="//////",
+                         label="ALLOW of an action the oracle denies"))
+    fig.legend(handles=handles, loc="lower center", ncol=4, bbox_to_anchor=(0.5, 0.99))
+    fig.tight_layout(w_pad=2.5)
+    plotting.save(fig, path)
 
 
 # --------------------------------------------------------------------------- #
@@ -460,7 +540,7 @@ def write_outputs(main, acq, hold, forget):
     def mac(name, value):
         macros[name] = value
 
-    W("# Progressive Autonomy as Preference Learning: Experiment Report (v2)\n")
+    W("# Progressive Autonomy as Preference Learning: Experiment Report\n")
     W(f"Generated by `uv run python -m experiment.run`. Stream length N={N}; "
       f"{len(SEEDS)} seeds for the main tables, {len(ACQ_SEEDS)} paired seeds for the "
       "acquisition probe. Every number below is recomputed from the code; nothing is "
@@ -473,13 +553,13 @@ def write_outputs(main, acq, hold, forget):
       f"(contains the changepoint) and late `[{T_LATE},{N})`. Prequential: every decision is "
       "logged before any label at that step exists.")
     W(f"- Thresholds from Chow costs (Proposition 2). Symmetric: c_FA=c_FB={SYMMETRIC.c_fa:.3f}, "
-      f"c_ask=1, band {tuple(round(x, 3) for x in SYMMETRIC.band)} (the v1 band). Safety-weighted: "
+      f"c_ask=1, band {tuple(round(x, 3) for x in SYMMETRIC.band)}. Safety-weighted: "
       f"c_FA={SAFETY.c_fa:g}, c_FB={SAFETY.c_fb:g}, c_ask=1, band "
       f"{tuple(round(x, 3) for x in SAFETY.band)}.")
     W("- Regret = mean Chow loss of the gateway's decisions minus that of the oracle policy "
       "that knows `Phi(f*)`, in units of one escalation.")
-    W("- Hyperparameters: `l_tool=1.1`, `l_ctx=1.2` throughout. v1 product: σ²=1.6, λ=90. "
-      "v2 additive (pre-registered in the v1 review before any v2 run): σs²=1.6, σg²=1.0, "
+    W("- Hyperparameters: `l_tool=1.1`, `l_ctx=1.2` throughout. Product: σ²=1.6, λ=90. "
+      "Additive (fixed before any run): σs²=1.6, σg²=1.0, "
       f"σd²=0.6, λ=90. Evidence-selected (EB) models re-select by Laplace marginal likelihood "
       f"every 64 labels over: product σ²∈{{1.6,3.2}} × λ∈{{60,120,240,480,960}}; additive "
       f"splits {ADD_SPLITS} × λ∈{{60,120,240,480}}; linear λ∈{{60,120,240,480}}.\n")
@@ -504,7 +584,7 @@ def write_outputs(main, acq, hold, forget):
       f"{pct(floor_sym)}%, safety band {pct(floor_safe)}%.\n")
     _write_table(os.path.join(GENDIR, "table_main.tex"), "TabMain", rows_tex)
 
-    for m, key in (("product-v1", "V"), ("additive", "A"), ("linear-EB", "L"),
+    for m, key in (("product", "V"), ("additive", "A"), ("linear-EB", "L"),
                    ("product-EB", "PE"), ("additive-EB", "AE"), ("per-tool", "T"),
                    ("per-cell", "C")):
         for k, name in (("ask_rate", "Ask"), ("accuracy_auto", "Acc"), ("false_allow_rate", "FA"),
@@ -518,11 +598,11 @@ def write_outputs(main, acq, hold, forget):
         mac(f"res{key}AskLate",
             f"{100 * agg_main(main, m, 'symmetric', 0.0, 'ask_rate', 'late')[0]:.1f}")
     mac("resFloorSym", f"{100 * floor_sym[0]:.1f}")
-    rv = agg_main(main, "product-v1", "symmetric", 0.0, "regret")[0]
+    rv = agg_main(main, "product", "symmetric", 0.0, "regret")[0]
     ra = agg_main(main, "additive", "symmetric", 0.0, "regret")[0]
     mac("resRegretCut", f"{100 * (1 - ra / rv):.0f}")
     mac("resFloorSafe", f"{100 * floor_safe[0]:.1f}")
-    for m, key in (("product-v1", "V"), ("additive", "A")):
+    for m, key in (("product", "V"), ("additive", "A")):
         lpa = agg_main(main, m, "symmetric", 0.0, "labels_per_action", None)[0]
         mac(f"res{key}Burden", f"{1 / lpa:.1f}")
     sel = [main[("additive-EB", "symmetric", 0.0, s)]["selected"] for s in SEEDS]
@@ -552,7 +632,7 @@ def write_outputs(main, acq, hold, forget):
         rows_tex.append(f"{LABELS[m]} & {pct(g('ask_rate'))} & {pct(g('accuracy_auto'))} & "
                         f"{g('regret')[0]:.3f} \\\\")
     _write_table(os.path.join(GENDIR, "table_safety.tex"), "TabSafety", rows_tex)
-    for m, key in (("product-v1", "V"), ("additive", "A"), ("linear-EB", "L")):
+    for m, key in (("product", "V"), ("additive", "A"), ("linear-EB", "L")):
         mac(f"resSafe{key}Ask", f"{100 * agg_main(main, m, 'safety', 0.0, 'ask_rate')[0]:.1f}")
         mac(f"resSafe{key}Regret", f"{agg_main(main, m, 'safety', 0.0, 'regret')[0]:.3f}")
 
@@ -567,7 +647,7 @@ def write_outputs(main, acq, hold, forget):
       "| Veto-window ALLOW (pooled) | HT realized-FA estimate | Truth | Jeffreys 95% (on k/n) covers truth |")
     W("|---|---|---|---|---|---|---|---|---|")
     rows_tex = []
-    for m in ("product-v1", "linear-EB", "additive", "additive-EB"):
+    for m in ("product", "linear-EB", "additive", "additive-EB"):
         g = lambda k, ph="scored": agg_main(main, m, "symmetric", AUDIT_EPS, k, ph)  # noqa: E731
         aud = [main[(m, "symmetric", AUDIT_EPS, s)]["audit"] for s in SEEDS]
         est = ms([a["ipw_estimate"] for a in aud])
@@ -579,7 +659,7 @@ def write_outputs(main, acq, hold, forget):
         W(f"| {m} | {f3(g('labels_per_action', None))} | {f3(g('regret'))} | {f3(charged)} | {be:.2f} | "
           f"{pv(main, m, 'symmetric', AUDIT_EPS)} (no audit: {pv(main, m, 'symmetric', 0.0)}) | {f3(est)} | "
           f"{f3(tru)} | {100 * cov:.0f}% |")
-        mac_key = {"product-v1": "V", "linear-EB": "L", "additive": "A", "additive-EB": "AE"}[m]
+        mac_key = {"product": "V", "linear-EB": "L", "additive": "A", "additive-EB": "AE"}[m]
         mac(f"resAud{mac_key}Charged", f"{charged[0]:.3f}")
         mac(f"resAud{mac_key}BreakEven", f"{be:.2f}")
         rows_tex.append(
@@ -588,7 +668,7 @@ def write_outputs(main, acq, hold, forget):
             f"{pv(main, m, 'symmetric', 0.0)} $\\to$ {pv(main, m, 'symmetric', AUDIT_EPS)} & "
             f"{100 * est[0]:.1f} / {100 * tru[0]:.1f} & {100 * cov:.0f}\\% \\\\")
     _write_table(os.path.join(GENDIR, "table_audit.tex"), "TabAudit", rows_tex)
-    for m, key in (("product-v1", "V"), ("additive", "A"), ("linear-EB", "L")):
+    for m, key in (("product", "V"), ("additive", "A"), ("linear-EB", "L")):
         mac(f"resAud{key}Veto", pv(main, m, "symmetric", AUDIT_EPS))
         mac(f"resAud{key}Regret", f"{agg_main(main, m, 'symmetric', AUDIT_EPS, 'regret')[0]:.3f}")
         mac(f"resAud{key}Labels",
@@ -605,7 +685,7 @@ def write_outputs(main, acq, hold, forget):
       "BALD − random (SE, wins) |")
     W("|---|---|---|---|---|---|---|")
     rows_tex = []
-    for kern in ("product-v1", "additive"):
+    for kern in ("product", "additive"):
         for orc in ("stationary", "changepoint"):
             rs = [acq[(kern, orc, s)] for s in ACQ_SEEDS]
             b = [r["band"] for r in rs]
@@ -619,7 +699,7 @@ def write_outputs(main, acq, hold, forget):
                 f"{LABELS[kern]} & {orc} & {100 * np.mean(b):.1f} & {100 * np.mean(r_):.1f} & "
                 f"{100 * np.mean(bd):.1f} & ${100 * d1[0]:+.1f} \\pm {100 * d1[1]:.1f}$ & "
                 f"${100 * d2[0]:+.1f} \\pm {100 * d2[1]:.1f}$ \\\\")
-            key = ("V" if kern == "product-v1" else "A") + ("S" if orc == "stationary" else "C")
+            key = ("V" if kern == "product" else "A") + ("S" if orc == "stationary" else "C")
             mac(f"resAcq{key}Gap", f"{100 * d1[0]:+.1f}")
             mac(f"resAcq{key}Se", f"{100 * d1[1]:.1f}")
             mac(f"resAcq{key}BaldGap", f"{100 * d2[0]:+.1f}")
@@ -630,7 +710,7 @@ def write_outputs(main, acq, hold, forget):
     W("| Kernel | Strategy | Labels | Share on ambiguous actions (q∈[.35,.65]) | Mean latent var "
       "| Mean abs(mu) | Mean BALD (bits) |")
     W("|---|---|---|---|---|---|---|")
-    for kern in ("product-v1", "additive"):
+    for kern in ("product", "additive"):
         rs = [acq[(kern, "changepoint", s)] for s in ACQ_SEEDS]
         for strat in ("band", "random", "bald"):
             pl = [r[f"place_{strat}"] for r in rs if r[f"place_{strat}"]]
@@ -639,7 +719,7 @@ def write_outputs(main, acq, hold, forget):
               f"{np.mean([p['mean_var'] for p in pl]):.3f} | "
               f"{np.mean([p['mean_abs_mu'] for p in pl]):.3f} | "
               f"{np.mean([p['mean_bald'] for p in pl]):.3f} |")
-            if kern == "product-v1":
+            if kern == "product":
                 mac(f"resPlace{strat.capitalize()}Amb",
                     f"{100 * np.mean([p['ambiguous_share'] for p in pl]):.1f}")
                 mac(f"resPlace{strat.capitalize()}Var", f"{np.mean([p['mean_var'] for p in pl]):.2f}")
@@ -654,33 +734,33 @@ def write_outputs(main, acq, hold, forget):
     W("| Model | Hold-out | Actions | Oracle denials | False-allow | ASK share | Correct auto |")
     W("|---|---|---|---|---|---|---|")
     for hname in ("benign", "dangerous"):
-        for m in ("per-tool", "per-cell", "product-v1", "linear-EB", "additive"):
+        for m in ("per-tool", "per-cell", "product", "linear-EB", "additive"):
             rs = [hold[(m, hname, s)] for s in SEEDS]
             n = sum(r["n"] for r in rs)
             nd = sum(r["n_deny"] for r in rs)
             fa = sum(r["false_allow"] for r in rs)
             W(f"| {m} | {hname} | {n} | {nd} | {fa} | {sum(r['ask'] for r in rs) / max(n, 1):.2f} "
               f"| {sum(r['correct_auto'] for r in rs) / max(n, 1):.2f} |")
-            key = {"product-v1": "V", "additive": "A", "linear-EB": "L", "per-tool": "T",
+            key = {"product": "V", "additive": "A", "linear-EB": "L", "per-tool": "T",
                    "per-cell": "C"}[m] + ("D" if hname == "dangerous" else "B")
             mac(f"resHold{key}FA", str(fa))
             mac(f"resHold{key}Deny", str(nd))
             mac(f"resHold{key}Correct", f"{100 * sum(r['correct_auto'] for r in rs) / max(n, 1):.0f}")
 
     # ---- evidence ranking --------------------------------------------------
-    W("\n## Laplace log marginal likelihood on the labels the v1 gateway collected\n")
-    W("The labelled set was selected by the v1 policy (escalated actions only), so this is "
+    W("\n## Laplace log marginal likelihood on the labels the product-kernel gateway collected\n")
+    W("The labelled set was selected by the product-kernel policy (escalated actions only), so this is "
       "evidence under a selected design, not on a random sample of the stream.\n")
-    ev = [main[("product-v1", "symmetric", 0.0, s)]["_evidence"] for s in SEEDS]
+    ev = [main[("product", "symmetric", 0.0, s)]["_evidence"] for s in SEEDS]
     names = list(ev[0])
     W("| Kernel | Mean log evidence | Best in # seeds |")
     W("|---|---|---|")
     for k in names:
         wins = sum(1 for e in ev if max(e, key=e.get) == k)
         W(f"| {k} | {np.mean([e[k] for e in ev]):.1f} | {wins}/{len(ev)} |")
-    mac("resEvV", f"{np.mean([e['product λ=90 (v1)'] for e in ev]):.1f}")
-    mac("resEvA", f"{np.mean([e['additive λ=90 (v2)'] for e in ev]):.1f}")
-    mac("resEvAWins", str(sum(1 for e in ev if max(e, key=e.get) == 'additive λ=90 (v2)')))
+    mac("resEvV", f"{np.mean([e['product λ=90'] for e in ev]):.1f}")
+    mac("resEvA", f"{np.mean([e['additive λ=90'] for e in ev]):.1f}")
+    mac("resEvAWins", str(sum(1 for e in ev if max(e, key=e.get) == 'additive λ=90')))
     mac("resEvLWins", str(sum(1 for e in ev if max(e, key=e.get) == 'linear+drift λ=90')))
 
     # ---- forgetting ---------------------------------------------------------
@@ -730,23 +810,25 @@ def main():
     specs = [(m, "symmetric", 0.0, s) for m in MODELS for s in SEEDS]
     specs += [(m, "safety", 0.0, s) for m in GP_MODELS for s in SEEDS]
     specs += [(m, "symmetric", AUDIT_EPS, s)
-              for m in ("product-v1", "linear-EB", "additive", "additive-EB") for s in SEEDS]
+              for m in ("product", "linear-EB", "additive", "additive-EB") for s in SEEDS]
     print(f"main: {len(specs)} runs ...", flush=True)
     main_res = _pool_map(job_main, specs)
-    acq_specs = [(k, o, s) for k in ("product-v1", "additive") for o in ORACLES for s in ACQ_SEEDS]
+    acq_specs = [(k, o, s) for k in ("product", "additive") for o in ORACLES for s in ACQ_SEEDS]
     print(f"acquisition: {len(acq_specs)} paired jobs ...", flush=True)
     acq = _pool_map(job_acq, acq_specs)
-    hold_specs = [(m, h, s) for m in ("per-tool", "per-cell", "product-v1", "linear-EB", "additive")
+    hold_specs = [(m, h, s) for m in ("per-tool", "per-cell", "product", "linear-EB", "additive")
                   for h in HOLDOUTS for s in SEEDS]
     print(f"hold-outs: {len(hold_specs)} runs ...", flush=True)
     hold = _pool_map(job_hold, hold_specs)
 
+    probe_specs = [(k, s) for k in ("product", "additive") for s in SEEDS]
+    print(f"probe traces: {len(probe_specs)} runs ...", flush=True)
+    probes = _pool_map(job_probe, probe_specs)
+
     print("figures ...", flush=True)
+    plotting.apply()
     fig_policy_evolution(main_res, os.path.join(FIGDIR, "policy_evolution.pdf"))
-    fig_query_savings(main_res, os.path.join(FIGDIR, "query_savings.pdf"))
-    fig_calibration(main_res, os.path.join(FIGDIR, "calibration.pdf"))
-    fig_drift(os.path.join(FIGDIR, "drift_tracking.pdf"))
-    forget = fig_forgetting(os.path.join(FIGDIR, "forgetting.pdf"))
+    forget = fig_forgetting(main_res, probes, os.path.join(FIGDIR, "forgetting.pdf"))
     fig_transfer(hold, os.path.join(FIGDIR, "transfer.pdf"))
 
     write_outputs(main_res, acq, hold, forget)

@@ -1,4 +1,4 @@
-"""The opaque-judge extension (Section 12): judge model and reliability
+"""The opaque-judge study: judge model and reliability
 estimation. Propositions 6-8 are proved in lean/TrustCalib/Judge.lean."""
 
 import numpy as np

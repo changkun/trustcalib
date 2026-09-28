@@ -5,7 +5,7 @@ This module *is* the manuscript's generative model (Definition 1, Sections
 latent risk tolerance
 
     f*(x, t) = g0(a, c)            # static acceptability of the action
-             + rho * trust(t)     # Section 6: trust accumulates over time
+             + rho * trust(t)     # trust accumulates over time
              + veto(a, t)         # three-way safety conjunction
              + ctx_offset(c)      # task context shifts tolerance
 
@@ -17,7 +17,7 @@ manuscript (and follow the advisor's litmus test: remove the conjunction and
 the drift and a plain GP would fit ``f*`` in a handful of queries):
 
 * ``trust(t)`` is a saturating accumulation with an *abrupt changepoint*
-  (Section 6: "moving to a new codebase"). The kernel's ``k_time`` component
+  ("moving to a new codebase"). The kernel's ``k_time`` component
   is what lets the gateway track this; without it the drift is unlearnable.
 * ``veto`` is a *three-way interaction* (irreversible action AND sensitive
   target AND low current trust). It is not any single feature the kernel sees;
@@ -57,7 +57,7 @@ class OracleConfig:
     kappa: float = 130.0      # trust accumulation timescale (in steps)
     veto: float = 3.0         # strength of the safety conjunction
     veto_sens: float = 0.65   # target-sensitivity threshold for the veto
-    changepoint: int | None = 750  # step at which trust resets (Section 6)
+    changepoint: int | None = 750  # step at which trust resets
 
     # Risk aggregation weights (sum ~= 1; r in roughly [0, 1]).
     w_rev: float = 0.28
@@ -79,7 +79,7 @@ def raw_risk(dp: DecisionPoint, cfg: OracleConfig = OracleConfig()) -> float:
 
 
 def trust(t: int, cfg: OracleConfig = OracleConfig()) -> float:
-    """Saturating trust accumulation with an abrupt Section 6 changepoint.
+    """Saturating trust accumulation with an abrupt changepoint.
 
     Before the changepoint trust grows as ``theta * (1 - exp(-t / kappa))``.
     At the changepoint it resets (the supervisor moves to an unfamiliar

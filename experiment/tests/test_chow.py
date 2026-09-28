@@ -15,7 +15,7 @@ def test_closed_form_thresholds():
     assert SAFETY.band == pytest.approx((0.25, 0.9))
 
 
-def test_v1_band_is_symmetric_chow():
+def test_symmetric_band_is_chow():
     assert SYMMETRIC.band == pytest.approx((0.35, 0.65))
 
 
@@ -34,9 +34,9 @@ def test_empty_band_never_asks_strictly():
         assert min(float(c.loss(ALLOW, p)), float(c.loss(BLOCK, p))) <= float(c.loss(ASK, p))
 
 
-def test_v1_tuning_degenerates_on_escalated_history():
-    """The Go port's Tune() sees only (p_hat, label) pairs recorded at ASK time,
-    so every p_hat is inside the band; the v1 grid search then finds no pair
+def test_label_tuning_degenerates_on_escalated_history():
+    """The Go gateway's Tune() sees only (p_hat, label) pairs recorded at ASK
+    time, so every p_hat is inside the band; the grid search then finds no pair
     meeting its caps and returns the default band."""
     rng = np.random.default_rng(0)
     p_hat = rng.uniform(0.35, 0.65, size=500)

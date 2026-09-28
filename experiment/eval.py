@@ -2,11 +2,12 @@
 
 Baselines:
 
-* **per-tool** (:class:`IndependentModel`, the v1 baseline): one Beta-Bernoulli
+* **per-tool** (:class:`IndependentModel`): one Beta-Bernoulli
   approval estimate per tool; ignores target and task.
 * **per-cell** (:class:`CellModel`): one Beta-Bernoulli estimate per
   ``(tool, target, task)`` cell; the "contextual bandit that treats each
-  (a, c) independently" of manuscript Section 7. Unseen cells stay at 0.5.
+  (a, c) independently" (manuscript: correlated generalization). Unseen
+  cells stay at 0.5.
 * **linear probit + drift**: a Laplace GP with :class:`kernel.LinearKernel`,
   i.e. Bayesian probit regression on the same features plus a shared OU
   time-drift term. The oracle's static term is linear in exactly these
@@ -103,7 +104,7 @@ def phase_metrics(res: GatewayResult, phases=SCORED, costs: Costs | None = None)
     """Headline metrics over the given phases of a run.
 
     * ``false_allow_rate``: fraction of ALLOWs the oracle would deny
-      (Bayes label ``q < 1/2``), as in v1;
+      (Bayes label ``q < 1/2``);
     * ``realized_fa``: expected fraction of ALLOWs the stochastic human would
       deny, ``mean(1 - q)`` over ALLOWs; this is what an audit estimates;
     * ``regret``: mean Chow loss of the gateway's decisions minus that of the
@@ -230,7 +231,9 @@ def held_out_decisions(res: GatewayResult, stream: list[DecisionPoint], hold,
         "n_deny": n_deny,
         "false_allow": sum(1 for s in sts if s.oracle_yes == 0 and s.decision == ALLOW),
         "false_block": sum(1 for s in sts if s.oracle_yes == 1 and s.decision == BLOCK),
+        "allow": sum(1 for s in sts if s.decision == ALLOW),
         "ask": sum(1 for s in sts if s.decision == ASK),
+        "block": sum(1 for s in sts if s.decision == BLOCK),
         "correct_auto": sum(1 for s in sts if s.correct_auto == 1),
     }
 

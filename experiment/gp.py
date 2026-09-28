@@ -114,7 +114,7 @@ class LaplaceGPC:
 
         Returns ``(f_bar, var, pi)`` where ``pi = Phi(f_bar/sqrt(1+var))`` is
         the posterior-predictive approval probability ``p_hat(x_*)`` of the
-        manuscript's decision rule (Section 5).
+        manuscript's decision rule (Proposition 2).
         """
         if not self._fitted:
             raise RuntimeError("call fit() before predict()")

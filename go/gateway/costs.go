@@ -6,7 +6,7 @@ import (
 )
 
 // Costs are the Chow reject-option costs of the three-tier rule (manuscript
-// Section 5, Proposition 2, machine-checked in lean/TrustCalib/Chow.lean).
+// Proposition 2, machine-checked in lean/TrustCalib/Chow.lean).
 // With approval probability q, the expected losses are
 //
 //	ALLOW: (1 - q) * FalseAllow    BLOCK: q * FalseBlock    ASK: Ask
@@ -16,7 +16,7 @@ import (
 //	tau_low = Ask / FalseBlock,    tau_high = 1 - Ask / FalseAllow.
 //
 // The ASK band is non-empty iff Ask * (FalseAllow + FalseBlock) <
-// FalseAllow * FalseBlock. The version-1 default band (0.35, 0.65) is exactly
+// FalseAllow * FalseBlock. The default band (0.35, 0.65) is exactly
 // this rule with symmetric costs FalseAllow = FalseBlock = Ask / 0.35 (see
 // SymmetricCosts). Thresholds derived from costs are specified, not tuned: no
 // labels are needed, and none of the selection bias of the collected history

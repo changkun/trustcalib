@@ -1,8 +1,9 @@
 // Package kernel implements the structured kernels over (action, context,
-// time) from Section 4 of the trustcalib manuscript. Two kernels share the
-// same feature blocks and implement the Kernel interface.
+// time) of the trustcalib manuscript (section "Trust Calibration as
+// Classification with a Reject Option"). Two kernels share the same feature
+// blocks and implement the Kernel interface.
 //
-// ProductKernel, the version-1 kernel,
+// ProductKernel, the separable kernel,
 //
 //	k(x, x') = sigma2 * k_tool(a, a') * k_ctx(c, c') * k_time(t, t')
 //
@@ -11,18 +12,18 @@
 // Proposition 4): once the labels near an action are older than a few lambda,
 // its posterior returns to the prior p_hat = 1/2 and it is re-escalated.
 //
-// AdditiveKernel, the version-2 kernel,
+// AdditiveKernel, the additive kernel,
 //
 //	k(x, x') = s_static * k_x(x, x')                  static action risk r(x)
 //	         + s_global * k_time(t, t')               shared tolerance tau(t)
 //	         + s_inter  * k_x(x, x') * k_time(t, t')  local drift
 //
-// with k_x = k_tool * k_ctx, mirrors the decomposition f(x, t) = tau(t) - r(x)
-// (manuscript Section 3). Only the time-coupled components forget. The static
-// component never decays, so what has been learned about how risky an action
-// is persists; every label, whatever its action, updates the shared tolerance
-// tau(t); and the interaction component lets individual actions drift
-// locally.
+// with k_x = k_tool * k_ctx, mirrors the latent-tolerance decomposition
+// f(x, t) = tau(t) - r(x) of the manuscript. Only the time-coupled components
+// forget. The static component never decays, so what has been learned about
+// how risky an action is persists; every label, whatever its action, updates
+// the shared tolerance tau(t); and the interaction component lets individual
+// actions drift locally.
 //
 // Block kernels: k_tool and k_ctx are squared-exponential (RBF) kernels
 // exp(-d²/(2 l²)) over the tool and context feature blocks, and k_time =
@@ -81,7 +82,8 @@ type ProductKernel struct {
 	Lambda float64 // time lengthscale (OU decay, in steps)
 }
 
-// DefaultKernel returns the manuscript defaults (kernel.py dataclass defaults).
+// DefaultKernel returns the product-kernel defaults (kernel.py dataclass
+// defaults; the paper's experiments use Lambda 90).
 func DefaultKernel() ProductKernel {
 	return ProductKernel{Sigma2: 1.6, LTool: 1.1, LCtx: 1.2, Lambda: 200.0}
 }
@@ -200,7 +202,7 @@ func (k ProductKernel) Diag(p Packed) []float64 {
 	return constant(p.Len(), k.Sigma2)
 }
 
-// AdditiveKernel holds the hyperparameters of the version-2 kernel
+// AdditiveKernel holds the hyperparameters of the additive kernel
 //
 //	s_static * k_x + s_global * k_time + s_inter * k_x * k_time
 //
@@ -217,8 +219,8 @@ type AdditiveKernel struct {
 	Lambda  float64 // time lengthscale (OU decay, in steps)
 }
 
-// DefaultAdditiveKernel returns the manuscript version-2 defaults (kernel.py
-// AdditiveKernel dataclass defaults).
+// DefaultAdditiveKernel returns the manuscript's additive-kernel defaults
+// (kernel.py AdditiveKernel dataclass defaults).
 func DefaultAdditiveKernel() AdditiveKernel {
 	return AdditiveKernel{SStatic: 1.6, SGlobal: 1.0, SInter: 0.6, LTool: 1.1, LCtx: 1.2, Lambda: 90.0}
 }

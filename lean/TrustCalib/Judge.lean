@@ -1,5 +1,6 @@
 /-
-Propositions 6-8 (manuscript §12): an opaque judge in front of the gateway.
+Propositions 6-8 (manuscript, calibrating an opaque LLM judge): an opaque judge
+in front of the gateway.
 
 A judge emits ALLOW/BLOCK for each action; the supervisor approves with
 probability `q x`. What matters to the supervisor is the judge's error rate

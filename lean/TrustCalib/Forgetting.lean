@@ -1,5 +1,6 @@
 /-
-Proposition 4 (manuscript §6): forgetting under the separable time kernel.
+Proposition 4 (manuscript, drift and forgetting): forgetting under the
+separable time kernel.
 
 For the product kernel `k((x,t),(x',t')) = kX x x' * exp(-|t - t'|/λ)`, every
 kernel predictor `μ(x*, t*) = Σᵢ kX x* xᵢ * exp(-|t* - tᵢ|/λ) * αᵢ` (this covers

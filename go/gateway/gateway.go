@@ -1,5 +1,5 @@
 // Package gateway implements the three-tier allow/ask/block policy and the
-// online learning loop from Section 5 of the manuscript, redesigned from the
+// online learning loop of the manuscript's gateway, redesigned from the
 // experiment's batch oracle loop (experiment/gateway.py run_gateway) into a
 // stateful object driven by real human approve/deny feedback.
 //

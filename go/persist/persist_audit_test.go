@@ -13,9 +13,9 @@ import (
 	"github.com/changkun/trustcalib/persist"
 )
 
-// v1State is a state file as written before label provenance, audits and the
-// version-2 config keys existed.
-const v1State = `{
+// preAuditState is a state file as written before label provenance, audits and
+// the kernel, cost and audit config keys existed.
+const preAuditState = `{
   "version": 1,
   "config": {
     "Kernel": {"Sigma2": 1.6, "LTool": 1.1, "LCtx": 1.2, "Lambda": 200},
@@ -37,9 +37,9 @@ const v1State = `{
   "label_hist": [1, 0, 1]
 }`
 
-func TestLoadV1StateBackwardCompatible(t *testing.T) {
+func TestLoadPreAuditStateBackwardCompatible(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	if err := os.WriteFile(path, []byte(v1State), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(preAuditState), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	st, ok, err := persist.Load(path, config.Default())
@@ -72,7 +72,7 @@ func TestLoadV1StateBackwardCompatible(t *testing.T) {
 	}
 	for _, li := range g.Labels() {
 		if li.Source != gateway.FromAsk || li.Propensity != 1 {
-			t.Fatalf("v1 labels should be escalations with propensity 1: %+v", li)
+			t.Fatalf("pre-audit labels should be escalations with propensity 1: %+v", li)
 		}
 	}
 	if g.AuditStats() != (gateway.AuditStats{}) {

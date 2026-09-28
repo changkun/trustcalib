@@ -1,5 +1,5 @@
 # trustcalib hyperparameters. Every key is optional; omitted keys fall back to
-# these manuscript defaults. Pass with: trustcalib-hook --config <this file>.
+# these defaults. Pass with: trustcalib-hook --config <this file>.
 
 # Which featurizer maps a hook request to kernel features:
 #   taxonomy  the bundled tool/target/task taxonomy (featurizer/trustcalib)
@@ -8,10 +8,10 @@
 featurizer: taxonomy
 
 kernel:
-  # product  (v1) sigma2 * k_tool * k_ctx * k_time: forgets everything,
-  #          including static action risk, at rate 1/lambda
-  # additive (v2) s_static * k_x + s_global * k_time + s_inter * k_x * k_time:
-  #          the static action risk never decays (recommended)
+  # product   sigma2 * k_tool * k_ctx * k_time: forgets everything, including
+  #           static action risk, at rate 1/lambda (default)
+  # additive  s_static * k_x + s_global * k_time + s_inter * k_x * k_time:
+  #           the static action risk never decays (recommended)
   type: product
 
   # Product-kernel parameters (used when type: product).

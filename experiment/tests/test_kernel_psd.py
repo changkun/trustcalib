@@ -1,4 +1,4 @@
-"""The Section 4 product kernel must be positive semidefinite."""
+"""The kernels must be positive semidefinite."""
 
 import numpy as np
 

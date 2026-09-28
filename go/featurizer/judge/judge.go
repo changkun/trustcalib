@@ -1,6 +1,7 @@
 // Package judge is a featurizer for shell-centric harnesses with an LLM judge
 // in front of a general-purpose shell tool, such as an auto-mode permission
-// classifier (manuscript Section 12, experiment/judge.py).
+// classifier (manuscript section "Calibrating an Opaque LLM Judge";
+// experiment/judge.py).
 //
 // When an agent routes everything through one shell tool there is no fixed
 // tool taxonomy; a judge decides allow/block from its own view of the action.

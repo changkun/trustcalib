@@ -4,10 +4,11 @@
 // hyperparameters are stored, and the model is refit on load. This keeps the
 // state small and consistent across hyperparameter or featurizer changes.
 //
-// Version-2 fields (label provenance, audit counters, pending audits and the
-// new config keys) are optional in the file: a state written before they
-// existed loads with every label taken as an escalation (propensity 1), zero
-// audit counters and the defaults for every config key it lacks.
+// Fields added with audits (label provenance, audit counters, pending audits
+// and the kernel, cost and audit config keys) are optional in the file: a
+// state written before they existed loads with every label taken as an
+// escalation (propensity 1), zero audit counters and the defaults for every
+// config key it lacks.
 package persist
 
 import (

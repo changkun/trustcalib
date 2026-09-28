@@ -31,7 +31,7 @@ func TestGatewayBurden(t *testing.T) {
 }
 
 // TestGatewayBurdenAdditive replays the same trajectory with the additive
-// (v2) kernel and asserts the same bounds.
+// kernel and asserts the same bounds.
 func TestGatewayBurdenAdditive(t *testing.T) {
 	c := config.Default()
 	c.Kernel.Type = config.KernelAdditive

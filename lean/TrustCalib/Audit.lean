@@ -1,5 +1,5 @@
 /-
-Proposition 5 (manuscript §8, selective labels): random audits.
+Proposition 5 (manuscript, selective labels and audits): random audits.
 
 Only escalated actions receive a human label, so the false-allow rate of
 auto-decided actions cannot be estimated from escalations. Auditing each

@@ -9,8 +9,10 @@ PDF: [`manuscript/main.pdf`](manuscript/main.pdf)
 This repository is the research artifact for the paper. It contains:
 - the LaTeX source;
 - the simulation that produces every table, figure and number in the paper;
-- a Lean 4 formalization of its propositions;
-- a Go implementation of the gateway for real agent harnesses.
+- a Lean 4 formalization of its propositions.
+
+The Go implementation of the gateway is kept at the `v3` tag (see
+[Go implementation](#go-implementation)).
 
 ## Abstract
 

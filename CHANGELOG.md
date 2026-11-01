@@ -2,6 +2,14 @@
 
 Release history of the paper and its artifact. Each release is a git tag.
 
+## Unreleased
+
+- **Go implementation removed.** The `go/` folder and its CI workflow are
+  removed. The `v3` tag keeps them. Their successor is Limen, a service for
+  agent harnesses built on this method, which is not yet public.
+- **Paper.** The paper no longer says that a Go library is released. It now
+  lists the choices that an implementation for agent harnesses needs.
+
 ## v3, 2026-09-28
 
 The extension to opaque LLM judges, and a restructured paper under a new

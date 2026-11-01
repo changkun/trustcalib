@@ -84,8 +84,6 @@ manuscript/   paper source (main.tex, references.bib); generated/ holds the
 experiment/   Python simulation: oracle, GP-probit gateway, baselines, the
               judge study and its pre-registration, tests, figures/, reports
 lean/         Lean 4 + Mathlib proofs of Propositions 1–8 (see lean/README.md)
-go/           Go library and CLI hook implementing the gateway for agent
-              harnesses (see go/README.md)
 ```
 
 Inside `experiment/`:
@@ -111,7 +109,6 @@ tests/         correctness tests
 | Python + [uv](https://docs.astral.sh/uv/) | simulation, tables, figures, tests | Python 3.12 (`.python-version`); numpy, scipy, matplotlib pinned in `uv.lock` |
 | [elan](https://github.com/leanprover/elan) / `lake` | checking the proofs | Lean `v4.34.1` (`lean/lean-toolchain`), Mathlib `v4.34.1` |
 | [tectonic](https://tectonic-typesetting.github.io/) | building the PDF | tested with 0.17 |
-| Go | the gateway implementation | 1.26 or later (`go/go.mod`) |
 
 No GPU is needed. Each simulation runner uses a process pool with all but two
 CPU cores and takes about a minute on an 18-core machine; expect the time to
@@ -167,7 +164,6 @@ Notes on reproducibility:
 
 ```
 uv run pytest            # Python: kernels, Laplace inference, Chow rule, forgetting, audits, judge
-(cd go && go test ./...) # Go: golden fixtures from the Python reference plus property tests
 ```
 
 ## Machine-checked proofs
@@ -181,17 +177,11 @@ propositions to theorems and the exact scope.
 
 ## Go implementation
 
-[`go/`](go) implements the gateway as a library and a stateless CLI hook
-(`trustcalib-hook decide | observe | tune | stats`) that an agent harness can
-call before each tool call. It supports:
-- the product and additive kernels;
-- cost-derived thresholds;
-- random audits with logged propensities, and a certification check;
-- a featurizer over an LLM judge's verdict and a command category, for
-  shell-centric harnesses.
-
-Its numerics are tested against golden fixtures exported from the Python
-reference. See [`go/README.md`](go/README.md).
+The `v3` tag contains a Go library and a command-line hook that implement the
+gateway for agent harnesses, with numerics tested against golden fixtures from
+the Python reference. That code is no longer maintained here. Its successor is
+Limen, a service for agent harnesses built on this method, which is not yet
+public.
 
 ## Citation
 

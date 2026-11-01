@@ -215,8 +215,8 @@ with its sampling propensity, are the only training labels.}
   with a calibrated posterior.
 \item \emph{Evidence.} Simulation studies with a known oracle test each claim,
   one of them pre-registered; the cores of all eight propositions are
-  machine-checked in Lean~4 with Mathlib; code, proofs and a Go
-  implementation for agent harnesses are released.
+  machine-checked in Lean~4 with Mathlib; the simulation code and the
+  proofs are released.
 \end{itemize}
 
 \paragraph{Outline.} Section~\ref{sec:related} reviews related work.
@@ -1228,11 +1228,11 @@ given user. The judge is then best used as a feature of a calibrated gateway,
 with argument-level features for the blind spots calibration cannot reach.
 Each judge call is itself a paid model call, so a cascade that consults the
 judge only when the gateway is uncertain, in the spirit of selective
-evaluation with escalation \citep{jung2025trust}, is a natural extension. We
-release a Go library and command-line hook for agent harnesses that implement
-these choices: both kernels, cost-derived thresholds, audits whose sampling
-propensities are logged with each label, a certification check, and a
-featurizer over a judge's verdict and a command category.
+evaluation with escalation \citep{jung2025trust}, is a natural extension. An
+implementation for agent harnesses needs these choices: both kernels,
+cost-derived thresholds, audits whose sampling propensities are logged with
+each label, a certification check, and a featurizer over a judge's verdict and
+a command category.
 
 \subsection{Limitations}\label{sec:limitations}
 

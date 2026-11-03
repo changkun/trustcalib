@@ -182,8 +182,8 @@ propositions to theorems and the exact scope.
 The `v3` tag contains a Go library and a command-line hook that implement the
 gateway for agent harnesses, with numerics tested against golden fixtures from
 the Python reference. That code is no longer maintained here. Its successor is
-Limen, a service for agent harnesses built on this method, which is not yet
-public.
+[Limen](https://github.com/latere-ai/limen), an open-source service for agent
+harnesses built on this method.
 
 ## Citation
 
